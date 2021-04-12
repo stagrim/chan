@@ -1,0 +1,38 @@
+use clap::{App, AppSettings, Arg};
+
+pub fn build_cli() -> App<'static, 'static> {
+    App::new("4Chan Image Downloader")
+            // Displays friendly help message if no argument is given
+            .setting(AppSettings::ArgRequiredElseHelp)
+            .version("0.1")
+            .author("Esbjörn S. <me@stagrim.com>")
+            .about("Download 4chan images")
+            // Convert to subcommand?
+            .arg(Arg::with_name("Iqdb")
+                .short("i")
+                .long("iqdb")
+                .help("Gather hi-res images from iqdb.org from archive sites"))
+            .arg(Arg::with_name("Directory")
+                .short("d")
+                .long("dir")
+                .value_name("DIRECTORY")
+                .takes_value(true)
+                .help("Save files to <DIRECTORY>"))
+            .arg(Arg::with_name("Override")
+                .short("o")
+                .long("override")
+                .help("Override existing files"))
+            .arg(Arg::with_name("Print-numbered")
+                .long("print-numbered")
+                .help("Print number in output"))
+            .arg(Arg::with_name("Quiet")
+                .short("q")
+                .long("quiet")
+                .help("Disables output"))
+            .arg(Arg::with_name("Debug")
+                .long("debug")
+                .help("Enables debug output"))
+            .arg(Arg::with_name("URL")
+                .help("Link to 4chan thread")
+                .required(true))
+}

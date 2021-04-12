@@ -4,6 +4,11 @@ version = "0.1.0"
 authors = ["Esbjörn Stenberg <me@stagrim.com>"]
 edition = "2018"
 
-# See more keys and their definitions at https://doc.rust-lang.org/cargo/reference/manifest.html
+# For generating shell completions script at build time
+build = "build.rs"
+
+[build-dependencies]
+clap = "2.23"
 
 [dependencies]
+clap = "2.33.3"
