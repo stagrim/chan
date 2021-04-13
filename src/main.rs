@@ -2,8 +2,10 @@ extern crate clap;
 extern crate reqwest;
 extern crate select;
 
+use reqwest::blocking::Client;
 use select::{document::Document, predicate::Name};
-// use futures::executor::block_on;
+use std::time::Duration;
+use reqwest::header::USER_AGENT;
 
 mod cli;
 
@@ -51,9 +53,9 @@ fn main() {
 
 fn get_links(url: &str) -> Vec<String> {
     let mut res: Vec<String> = Vec::new();
-    let resp = reqwest::blocking::get(url).unwrap();
-    println!("{:#?}", resp);
-    // assert!(resp.status().is_success(), "Connection could not be made");
+    let client = Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
+    let resp = client.get(url).header(USER_AGENT, "4chan image downloader").send().unwrap();
+    assert!(resp.status().is_success(), "Connection could not be made");
 
     Document::from_read(resp)
         .unwrap()
