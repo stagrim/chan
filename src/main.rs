@@ -2,7 +2,7 @@ extern crate clap;
 extern crate reqwest;
 extern crate select;
 
-use reqwest::blocking::Client;
+use reqwest::{Response, blocking::Client};
 use select::{document::Document, predicate::Name};
 use std::time::Duration;
 use reqwest::header::USER_AGENT;
@@ -10,6 +10,11 @@ use std::path::{Path, PathBuf};
 use std::fs::{File, create_dir, remove_dir_all, read_dir};
 
 mod cli;
+
+//port TODO: Add cli arguments logic
+//port TODO: Add colors
+
+//TODO: To increase speed search for new links if an image has not been found or does not work.
 
 fn main() {
     let matches = cli::build_cli().get_matches();
@@ -67,6 +72,7 @@ fn main() {
                     !n.contains("url=") &&
                     // Filter away all thumbnail images and only keep the hi-res ones
                     !n.contains("/thumb/"))
+                    .map(|n| n.replace("//", "https://"))
                 .collect();
     }
 
@@ -79,7 +85,7 @@ fn main() {
         create_dir(dir).expect("Could not create directory, may not have write permission");
     }
 
-    for img in urls {
+    for img in urls.iter() {
         // true if iqdb does not find image
         let mut iqdb_not_found: bool = false;
         // true if iqdb finds links but lynx can not find any image links 
@@ -89,21 +95,22 @@ fn main() {
         // Link to iqdb image search for current image
         let mut iqdb_link: String = String::new();
         // Name for image
-        let mut name: &str;
+        let mut name: String = String::new();
         // Path for new file
-        let file_path: PathBuf;
+        let mut file_path: PathBuf;
 
         if matches.is_present("print-numbered") {
             number += 1;
         }
 
         // Create name for image
-        name = img.split("/").filter(|&s| !s.is_empty()).last().unwrap();
-        file_path = dir_path.join(name);
+        name = img.split("/").filter(|&s| !s.is_empty()).last().unwrap().to_string();
+        file_path = dir_path.join(&name);
 
         if matches.is_present("iqdb") && ! file_path.is_file() {
             // Get name without extension or 's' for thumbnails
-            let name = &name.replace("s", "");
+            name = name.replace("s", "");
+            file_path = dir_path.join(name.as_str());
 
             // Check if a file with the same name exists (ignores file extension)
             let files = read_dir(&dir_path).expect("Could not read directory");
@@ -114,6 +121,7 @@ fn main() {
                         exists = true
                 }
             }
+            
             if exists {
                 iqdb_file_exists = true;
             }
@@ -128,20 +136,21 @@ fn main() {
                 debug_output("iqdb_link", &iqdb_link);
                 
                 // Lists all links on site and removes non useful links
-                let iqdb_urls: Vec<String> = get_links(&iqdb_link)
+                let mut iqdb_urls: Vec<String> = get_links(&iqdb_link)
                                 // Get all links before the '#' link (since all after are irrelevant)
                                 .split(|n| n == &"#".to_string())
                                 .collect::<Vec<_>>()[0].to_vec()
-                                // Remove first element ('/' link) Crashed if result is empty
-                                // TODO: use filter instead
-                                .split_first()
-                                    // Some sort of error handling
-                                    .or(Some((&"".to_string(), &vec!("".to_string()))))
-                                    .unwrap().1.to_vec()
                                 // Format links
                                 .into_iter()
+                                // Remove first element ('/' link)
+                                .filter(|n| n != "/")
                                 .map(|n| n.replace("//", "https://"))
                                 .collect();
+                
+                // That site being the first link found means that the "No relevant matches" message is displayed
+                if ! iqdb_urls.is_empty() && iqdb_urls[0].contains("saucenao.com/search.php") {
+                    iqdb_urls = Vec::new();
+                }
 
                 debug_output("urls from iqdb", &format!("{:#?}", iqdb_urls));
 
@@ -173,10 +182,10 @@ fn main() {
                 if img_links.is_empty() {
                     iqdb_no_image_link_found = true;
                 }
-                // Newly found image may have another file extension
-                // Updates name with new extension
-                debug_output("name", name);
             }
+        }
+        else {
+            img_links = vec!(img.to_string());
         }
 
         if matches.is_present("print-numbered") {
@@ -184,7 +193,7 @@ fn main() {
         }
 
         if ! matches.is_present("override") && ( file_path.is_file() || iqdb_file_exists ) {
-            print!("{} already exists in {}", name, dir);
+            print!("{} already exists in {}", name.as_str(), dir);
         }
         else if iqdb_not_found {
             print!("Image not found on iqdb.org\n\t{}", iqdb_link);
@@ -193,23 +202,38 @@ fn main() {
             print!("Image found on iqdb.org but can not be downloaded automatically\n\t{}", iqdb_link);
         }
         else {
-            print!("Downloading {} to {}", name, dir);
+            print!("Downloading {} to {}", name.as_str(), dir);
 
             if matches.is_present("debug") {
                 println!("");
             }
+            
             // Iterate over found image urls until a with data is produced
             // TODO: Download from chan.sankakucomplex.com
             // TODO: Give error if no link works, check if break is called in for loop!
-
             for url in img_links.iter() {
+                let extension = url.split(".").last().expect("No extension found");
+                debug_output("extension", extension);
+                file_path.set_extension(extension);
+
                 debug_output("Trying", url.as_str());
-                let client = Client::builder().timeout(Duration::from_secs(60)).build() .unwrap();
+                let client = Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
                 let mut resp = client.get(url)
                     .header(USER_AGENT, "4chan image downloader").send().unwrap();
-                debug_output("path", file_path.as_path().to_str().unwrap());
-                let mut file: File = File::create("test.jpg").expect("Could not create file");
-                std::io::copy(&mut resp, &mut file).expect("failed to copy content");
+
+                debug_output("name", &file_path.as_os_str().to_str().unwrap());
+                
+                let mut file: File = File::create(&file_path.as_os_str()).expect("Could not create file");
+                std::io::copy(&mut resp, &mut file).expect("Could not copy to image");
+
+                let size = std::fs::metadata(&file_path).unwrap().len();
+                // Stupid solution where image must be larger than 1 kB as not to download a 404 page or something as an image
+                // TODO: fix this, possible to check if image is valid?
+                debug_output("size", &size.to_string());
+                // Break if downloaded file contains data
+                if file_path.exists() && size > 1000 {
+                    break;
+                }
             }
             // TODO: Check if file extension has changed
         }
@@ -225,7 +249,14 @@ fn get_links(url: &str) -> Vec<String> {
     let mut res: Vec<String> = Vec::new();
     // TODO: proper error in case of connection error
     let client = Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
-    let resp = client.get(url).header(USER_AGENT, "4chan image downloader").send().unwrap();
+    let resp =  match client.get(url).header(USER_AGENT, "4chan image downloader").send() {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    if !resp.status().is_success() {
+        debug_output("status error on", url);
+        return Vec::new();
+    }
     assert!(resp.status().is_success(), "Connection could not be made");
 
     Document::from_read(resp)
