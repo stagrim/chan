@@ -1,20 +1,24 @@
 extern crate clap;
 extern crate reqwest;
 extern crate select;
+extern crate ansi_term;
 
-use reqwest::{Response, blocking::Client};
+use reqwest::blocking::Client;
+use reqwest::header::USER_AGENT;
 use select::{document::Document, predicate::Name};
 use std::time::Duration;
-use reqwest::header::USER_AGENT;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::{Path, PathBuf};
-use std::fs::{File, create_dir, remove_dir_all, read_dir};
+use std::fs::{File, create_dir, read_dir};
+use ansi_term::Color::*;
 
 mod cli;
 
-//port TODO: Add cli arguments logic
-//port TODO: Add colors
-
+//TODO: switch from reqwest to the less complex attohttpc
 //TODO: To increase speed search for new links if an image has not been found or does not work.
+static debug: AtomicBool = AtomicBool::new(false);
+static print_numbered: AtomicBool = AtomicBool::new(true);
+
 
 fn main() {
     let matches = cli::build_cli().get_matches();
@@ -25,6 +29,16 @@ fn main() {
     let mut urls: Vec<String>;
     // Contains links to images that is to be downloaded
     let mut img_links: Vec<String> = Vec::new();
+    // Reqwest client to pass to get_link function
+    let client = Client::builder().timeout(Duration::from_secs(60)).build().expect("Could not build Client");
+
+    // Enables debug output if flag is present
+    if matches.is_present("debug") {
+        debug.store(true, Ordering::Relaxed);
+    }
+    if matches.is_present("not-numbered") {
+        print_numbered.store(false, Ordering::Relaxed)
+    }
 
     if matches.value_of("directory").is_some() {
         dir = matches.value_of("directory").unwrap();
@@ -38,12 +52,11 @@ fn main() {
     }
     dir_path = Path::new(".").join(dir);
     
-    println!("Downloading images to {}/", dir);
-    println!("Url: {}", url);
+    println!("Downloading images to {}/", Cyan.paint(dir));
 
     if matches.is_present("iqdb") {
         // dumps thumbnails image links on site to 'urls' to use with iqdb
-        urls = get_links(url).into_iter()
+        urls = get_links(&client, url).into_iter()
                 // Grab only thumbnail images
                 .filter(|n| n.contains("/thumb/"))
                 // Split at http to separate the two links and get the second one
@@ -62,7 +75,7 @@ fn main() {
                 .collect();
     }
     else {
-        urls = get_links(url).into_iter()
+        urls = get_links(&client, url).into_iter()
                 .filter(|n| (
                     n.ends_with(".jpg") || 
                     n.ends_with(".gif") || 
@@ -107,7 +120,7 @@ fn main() {
         name = img.split("/").filter(|&s| !s.is_empty()).last().unwrap().to_string();
         file_path = dir_path.join(&name);
 
-        if matches.is_present("iqdb") && ! file_path.is_file() {
+        if matches.is_present("iqdb") && ( !file_path.is_file() || matches.is_present("override") ) {
             // Get name without extension or 's' for thumbnails
             name = name.replace("s", "");
             file_path = dir_path.join(name.as_str());
@@ -117,7 +130,9 @@ fn main() {
             let mut exists = false;
             for file in files {
                 if file.unwrap().path().to_str().unwrap()
-                    .contains(name.split(".").collect::<Vec<_>>()[0]) {
+                    .contains(name.split(".").collect::<Vec<_>>()[0]) &&
+                    // Ignores whether file exists or not if override flag is passed
+                    !matches.is_present("override") {
                         exists = true
                 }
             }
@@ -136,7 +151,7 @@ fn main() {
                 debug_output("iqdb_link", &iqdb_link);
                 
                 // Lists all links on site and removes non useful links
-                let mut iqdb_urls: Vec<String> = get_links(&iqdb_link)
+                let mut iqdb_urls: Vec<String> = get_links(&client, &iqdb_link)
                                 // Get all links before the '#' link (since all after are irrelevant)
                                 .split(|n| n == &"#".to_string())
                                 .collect::<Vec<_>>()[0].to_vec()
@@ -159,7 +174,7 @@ fn main() {
                 for url in iqdb_urls.iter() {
                     debug_output("loop url", url);
                     // Create array of image links found at url given by iqdb
-                    let mut new_imgs = get_links(url).into_iter()
+                    let mut new_imgs = get_links(&client, url).into_iter()
                                                 .filter(|n| (
                                                     n.ends_with(".jpg") || 
                                                     n.ends_with(".gif") || 
@@ -188,21 +203,29 @@ fn main() {
             img_links = vec!(img.to_string());
         }
 
-        if matches.is_present("print-numbered") {
-            print!("[{}] ", number);
+        if print_numbered.load(Ordering::Relaxed) {
+            number += 1;
+            print!("[{}] ", Blue.paint(number.to_string()));
         }
 
         if ! matches.is_present("override") && ( file_path.is_file() || iqdb_file_exists ) {
-            print!("{} already exists in {}", name.as_str(), dir);
+            println!("{} {} in {}", 
+            name.as_str(),
+            Blue.paint("already exists"),
+            dir);
         }
         else if iqdb_not_found {
-            print!("Image not found on iqdb.org\n\t{}", iqdb_link);
+            println!("{} on iqdb.org\n\t{}", 
+            Red.paint("Image not found"),
+            iqdb_link);
         }
         else if iqdb_no_image_link_found {
-            print!("Image found on iqdb.org but can not be downloaded automatically\n\t{}", iqdb_link);
+            println!("Image found on iqdb.org but {}\n\t{}", 
+                    Yellow.paint("can not be downloaded automatically"), 
+                    iqdb_link);
         }
         else {
-            print!("Downloading {} to {}", name.as_str(), dir);
+            print!("Downloading {} to {} ", name.as_str(), dir);
 
             if matches.is_present("debug") {
                 println!("");
@@ -235,6 +258,8 @@ fn main() {
                     break;
                 }
             }
+
+            println!("{}", Green.paint("Done"))
             // TODO: Check if file extension has changed
         }
         
@@ -242,13 +267,16 @@ fn main() {
 }
 
 fn debug_output(title: &str, message: &str) {
-    println!("[{}] {} &", title, message);
+    if debug.load(Ordering::Relaxed) {
+        println!("[{}] {} &", Purple.paint(title), message);
+    }
 }
 
-fn get_links(url: &str) -> Vec<String> {
+// TODO: Return Result and better error handling for connection issues, https error codes etc.
+/// Returns Vector with all links found in anchor tags on given site
+fn get_links(client: &Client, url: &str) -> Vec<String> {
     let mut res: Vec<String> = Vec::new();
     // TODO: proper error in case of connection error
-    let client = Client::builder().timeout(Duration::from_secs(60)).build().unwrap();
     let resp =  match client.get(url).header(USER_AGENT, "4chan image downloader").send() {
         Ok(r) => r,
         Err(_) => return Vec::new(),
