@@ -2,6 +2,7 @@ extern crate clap;
 extern crate attohttpc;
 extern crate select;
 extern crate ansi_term;
+extern crate filetime;
 
 use attohttpc::Response;
 use select::{document::Document, predicate::Name};
@@ -9,6 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::{Path, PathBuf};
 use std::fs::{File, create_dir, read_dir};
 use ansi_term::Color::*;
+use filetime::set_file_mtime;
 
 mod cli;
 
@@ -25,16 +27,22 @@ fn main() {
     let url: &str = matches.value_of("url").expect("No url provided");
     let dir: &str;
     let dir_path: PathBuf;
+    let mut update_modify_date: bool = false;
     let mut number: i32 = 0;
     let mut urls: Vec<String>;
     // Contains links to images that is to be downloaded
     let mut img_links: Vec<String> = Vec::new();
+
     // Enables debug output if flag is present
     if matches.is_present("debug") {
         DEBUG.store(true, Ordering::Relaxed);
     }
+    // Disables numbered output when flag is passed
     if matches.is_present("not-numbered") {
         PRINT_NUMBERED.store(false, Ordering::Relaxed)
+    }
+    if matches.is_present("update-modify-date") {
+        update_modify_date = true;
     }
 
     if matches.value_of("directory").is_some() {
@@ -108,6 +116,8 @@ fn main() {
         let mut name: String;
         // Path for new file
         let mut file_path: PathBuf;
+        // Name without an extension
+        let file_name : String;
 
         if matches.is_present("print-numbered") {
             number += 1;
@@ -115,6 +125,7 @@ fn main() {
 
         // Create name for image
         name = img.split("/").filter(|&s| !s.is_empty()).last().unwrap().to_string();
+        file_name = name.split(".").collect::<Vec<_>>()[0].to_string();
         file_path = dir_path.join(&name);
 
         if matches.is_present("iqdb") && ( !file_path.is_file() || matches.is_present("override") ) {
@@ -126,11 +137,9 @@ fn main() {
             let files = read_dir(&dir_path).expect("Could not read directory");
             let mut exists = false;
             for file in files {
-                if file.unwrap().path().to_str().unwrap()
-                    .contains(name.split(".").collect::<Vec<_>>()[0]) &&
-                    // Ignores whether file exists or not if override flag is passed
-                    !matches.is_present("override") {
-                        exists = true
+                if file.unwrap().path().to_str().unwrap().contains(&file_name) && ! matches.is_present("override") {
+                        exists = true;
+                        break;
                 }
             }
             
@@ -206,6 +215,14 @@ fn main() {
         }
 
         if ! matches.is_present("override") && ( file_path.is_file() || iqdb_file_exists ) {
+            for entry in read_dir(&dir_path).unwrap() {
+                let entry_file_name = entry.unwrap().file_name();
+                if entry_file_name.to_str().unwrap().contains(file_path.to_str().unwrap()) {
+                    //TODO: Fix when iqdb comes online
+                    println!("{:?}", entry_file_name);
+                }
+            }
+        
             println!("{} {} in {}", 
             name.as_str(),
             Blue.paint("already exists"),
@@ -257,7 +274,13 @@ fn main() {
                 }
             }
 
-            println!("{}", Green.paint("Done"))
+            println!("{}", Green.paint("Done"));
+        }
+
+        if update_modify_date {
+            debug_output("file path", file_path.to_str().unwrap());
+            
+            set_file_mtime(file_path, filetime::FileTime::now()).expect("Could not update modified date");
         }
         
     }

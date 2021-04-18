@@ -11,7 +11,13 @@ build = "build.rs"
 clap = "2.23"
 
 [dependencies]
+# Handels CLI
 clap = "2.33.3"
+# Downloads webpage and images
 attohttpc = "0.17.0"
+# Find all links on site, gets thread subject
 select = "0.5.0"
+# Colored output
 ansi_term = "0.12.1"
+# Modify file mdate when flag is passed
+filetime = "0.2.14"

@@ -26,7 +26,7 @@ pub fn build_cli() -> App<'static, 'static> {
                 .long("not-numbered")
                 .short("n")
                 .help("Do not print image number in output"))
-            // Not yet implemented
+            //TODO: Not yet implemented
             .arg(Arg::with_name("quiet")
                 .short("q")
                 .long("quiet")
@@ -35,6 +35,12 @@ pub fn build_cli() -> App<'static, 'static> {
                 .short("D")
                 .long("debug")
                 .help("Enables debug output"))
+            .arg(Arg::with_name("update-modify-date")
+                .short("u")
+                .long("update-modify-date")
+                .help("Updates modify date of existing images")
+                .long_help(
+                    "Updates the modify date to the current time when downloading images.\nThis ensures that images will be in order of time posted when sorted by modification date"))
             .arg(Arg::with_name("url")
                 .help("Link to 4chan thread")
                 .required(true))
