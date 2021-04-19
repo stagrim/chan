@@ -47,6 +47,11 @@ fn main() {
 
     if matches.value_of("directory").is_some() {
         dir = matches.value_of("directory").unwrap();
+        // TODO: Add other non permitted characters
+        if dir.contains("/") {
+            println!("{} directory cannot contain '/' character", Red.paint("Error:"));
+            std::process::exit(1);
+        }
     }
     else {
         dir = url.split("/")
