@@ -5,7 +5,7 @@ extern crate ansi_term;
 extern crate filetime;
 
 use attohttpc::Response;
-use select::{document::Document, predicate::Name};
+use select::{document::Document, predicate::{Class, Name}};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::path::{Path, PathBuf};
 use std::fs::{File, create_dir, read_dir};
@@ -24,8 +24,8 @@ const USER_AGENT_VALUE: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:87.0) Gecko/2
 
 fn main() {
     let matches = cli::build_cli().get_matches();
-    let url: &str = matches.value_of("url").expect("No url provided");
-    let dir: &str;
+    let url: String = matches.value_of("url").expect("No url provided").to_string();
+    let dir: String;
     let dir_path: PathBuf;
     let mut update_modify_date: bool = false;
     let mut number: i32 = 0;
@@ -46,7 +46,7 @@ fn main() {
     }
 
     if matches.value_of("directory").is_some() {
-        dir = matches.value_of("directory").unwrap();
+        dir = matches.value_of("directory").unwrap().to_string();
         // TODO: Add other non permitted characters
         if dir.contains("/") {
             println!("{} directory cannot contain '/' character", Red.paint("Error:"));
@@ -54,19 +54,37 @@ fn main() {
         }
     }
     else {
-        dir = url.split("/")
-            .filter(|&s| !s.is_empty())
-            .collect::<Vec<_>>()
-            .last()
-            .expect("No directory name could be created");
+
+        let doc = get_html(&url).expect("Could not fetch site");
+        let thread_number: String = url.split("/").filter(|&s| !s.is_empty()).collect::<Vec<_>>().last().unwrap().to_string();
+        let mut subject_node = doc.find(Class("subject")).collect::<Vec<_>>();
+
+        // TODO: More elegant solution instead of if, if, if ...
+        if subject_node.is_empty() {
+            subject_node = doc.find(Class("name")).collect::<Vec<_>>();
+        }
+        if subject_node.is_empty() {
+            // Class on archived.moe
+            subject_node = doc.find(Class("post_title")).collect::<Vec<_>>();
+        }
+
+        let subject: String;
+        if subject_node.is_empty() {
+            subject = "title".to_string();
+        }
+        else {
+            subject = subject_node.first().unwrap().text().replace("/", " ");
+        }
+
+        dir = format!("{} - {}", thread_number, subject);
     }
-    dir_path = Path::new(".").join(dir);
+    dir_path = Path::new(".").join(&dir);
     
-    println!("Downloading images to {}/", Cyan.paint(dir));
+    println!("Downloading images to {}/", Cyan.paint(&dir));
 
     if matches.is_present("iqdb") {
         // dumps thumbnails image links on site to 'urls' to use with iqdb
-        urls = get_links(url).into_iter()
+        urls = get_links(&url).into_iter()
                 // Grab only thumbnail images
                 .filter(|n| n.contains("/thumb/"))
                 // Split at http to separate the two links and get the second one
@@ -85,7 +103,7 @@ fn main() {
                 .collect();
     }
     else {
-        urls = get_links(url).into_iter()
+        urls = get_links(&url).into_iter()
                 .filter(|n| (
                     n.ends_with(".jpg") || 
                     n.ends_with(".gif") || 
@@ -105,7 +123,7 @@ fn main() {
 
     // Create directory if it does not exist
     if ! dir_path.is_dir() {
-        create_dir(dir).expect("Could not create directory, may not have write permission");
+        create_dir(&dir).expect("Could not create directory, may not have write permission");
     }
 
     for img in urls.iter() {
@@ -267,7 +285,7 @@ fn main() {
                 debug_output("name", &file_path.as_os_str().to_str().unwrap());
                 
                 let mut file: File = File::create(&file_path.as_os_str()).expect("Could not create file");
-                std::io::copy(&mut resp, &mut file).expect("Could not copy to image");
+                std::io::copy(&mut resp, &mut file).expect("Could not download image to file");
 
                 let size = std::fs::metadata(&file_path).unwrap().len();
                 // Stupid solution where image must be larger than 1 kB as not to download a 404 page or something as an image
@@ -297,26 +315,33 @@ fn debug_output(title: &str, message: &str) {
     }
 }
 
-// TODO: Return Result and better error handling for connection issues, https error codes etc.
-/// Returns Vector with all links found in anchor tags on given site
-fn get_links(url: &str) -> Vec<String> {
-    let mut res: Vec<String> = Vec::new();
+/// Returns HTML Document of given site
+fn get_html(url: &str) -> Result<Document, String> {
     // TODO: proper error in case of connection error
     let resp: Response =  match attohttpc::get(url).header(USER_AGENT, USER_AGENT_VALUE).send() {
         Ok(r) => r,
         Err(_) => {
                     debug_output("status error on", url);
-                    return Vec::new()
+                    return Err(format!("Device may be offline"));
                 },
     };
 
     if !resp.is_success() {
         debug_output("status error on", url);
-        return Vec::new();
+        return Err(format!("Site returned {} error status code", resp.status()))
     }
-    assert!(resp.status().is_success(), "Connection could not be made");
 
-    Document::from_read(resp)
+    let document = Document::from_read(resp).unwrap();
+
+    return Ok(document);
+}
+
+// TODO: Return Result and better error handling for connection issues, https error codes etc.
+/// Returns Vector with all links found in anchor tags on given site
+fn get_links(url: &str) -> Vec<String> {
+    let mut res: Vec<String> = Vec::new();
+
+    get_html(url)
         .unwrap()
         .find(Name("a"))
         .filter_map(|n| n.attr("href"))
