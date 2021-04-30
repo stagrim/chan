@@ -5,10 +5,12 @@ extern crate ansi_term;
 extern crate filetime;
 
 use attohttpc::Response;
+use clap::ArgMatches;
 use select::{document::Document, predicate::{Class, Name}};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::{io::BufReader, sync::atomic::{AtomicBool, Ordering}};
 use std::path::{Path, PathBuf};
 use std::fs::{File, create_dir, read_dir};
+use std::io::prelude::*;
 use ansi_term::Color::*;
 use filetime::set_file_mtime;
 
@@ -31,7 +33,7 @@ fn main() {
     let mut number: i32 = 0;
     let mut urls: Vec<String>;
     // Contains links to images that is to be downloaded
-    let mut img_links: Vec<String> = Vec::new();
+    let img_links: Vec<String> = Vec::new();
 
     // Enables debug output if flag is present
     if matches.is_present("debug") {
@@ -127,178 +129,16 @@ fn main() {
     }
 
     for img in urls.iter() {
-        // true if iqdb does not find image
-        let mut iqdb_not_found: bool = false;
-        // true if iqdb finds links but lynx can not find any image links 
-        let mut iqdb_no_image_link_found: bool = false;
-        // true if file exists in dir
-        let mut iqdb_file_exists: bool = false;
-        // Link to iqdb image search for current image
-        let mut iqdb_link: String = String::new();
-        // Name for image
-        let mut name: String;
         // Path for new file
-        let mut file_path: PathBuf;
-        // Name without an extension
-        let file_name : String;
+        let file_path: PathBuf;
 
         if matches.is_present("print-numbered") {
             number += 1;
-        }
-
-        // Create name for image
-        name = img.split("/").filter(|&s| !s.is_empty()).last().unwrap().to_string();
-        file_name = name.split(".").collect::<Vec<_>>()[0].to_string();
-        file_path = dir_path.join(&name);
-
-        if matches.is_present("iqdb") && ( !file_path.is_file() || matches.is_present("override") ) {
-            // Get name without extension or 's' for thumbnails
-            name = name.replace("s", "");
-            file_path = dir_path.join(name.as_str());
-
-            // Check if a file with the same name exists (ignores file extension)
-            let files = read_dir(&dir_path).expect("Could not read directory");
-            let mut exists = false;
-            for file in files {
-                if file.unwrap().path().to_str().unwrap().contains(&file_name) && ! matches.is_present("override") {
-                        exists = true;
-                        break;
-                }
-            }
-            
-            if exists {
-                iqdb_file_exists = true;
-            }
-            else {
-                // Getting extension here should not be necessary 
-
-                debug_output("img", &img.clone());
-
-                // Create link to iqdb image search for current image (used if no image is found)
-                // TODO: grab iqdb link directly from site?
-                iqdb_link = format!("https://iqdb.org/?url={}", img);
-                debug_output("iqdb_link", &iqdb_link);
-                
-                // Lists all links on site and removes non useful links
-                let mut iqdb_urls: Vec<String> = get_links( &iqdb_link)
-                                // Get all links before the '#' link (since all after are irrelevant)
-                                .split(|n| n == &"#".to_string())
-                                .collect::<Vec<_>>()[0].to_vec()
-                                // Format links
-                                .into_iter()
-                                // Remove first element ('/' link)
-                                .filter(|n| n != "/")
-                                .map(|n| n.replace("//", "https://"))
-                                .collect();
-                
-                // That site being the first link found means that the "No relevant matches" message is displayed
-                if ! iqdb_urls.is_empty() && iqdb_urls[0].contains("saucenao.com/search.php") {
-                    iqdb_urls = Vec::new();
-                }
-
-                debug_output("urls from iqdb", &format!("{:#?}", iqdb_urls));
-
-                img_links = Vec::new();
-                // Use all source links to find images and take all image links found
-                for url in iqdb_urls.iter() {
-                    debug_output("loop url", url);
-                    // Create array of image links found at url given by iqdb
-                    let mut new_imgs = get_links(url).into_iter()
-                                                .filter(|n| (
-                                                    n.ends_with(".jpg") || 
-                                                    n.ends_with(".gif") || 
-                                                    n.ends_with(".png") || 
-                                                    n.ends_with(".jpeg") || 
-                                                    n.ends_with(".webm") ) &&
-                                                    !n.contains("url="))
-                                                .collect::<Vec<_>>();
-                    debug_output("new imgs", &format!("{:#?}", new_imgs));
-
-                    img_links.append(&mut new_imgs);
-                }
-
-                debug_output("img links", &format!("{:#?}", img_links));
-
-                // If no image is found
-                if iqdb_urls.is_empty() {
-                    iqdb_not_found = true;
-                }
-                if img_links.is_empty() {
-                    iqdb_no_image_link_found = true;
-                }
-            }
-        }
-        else {
-            img_links = vec!(img.to_string());
-        }
-
-        if PRINT_NUMBERED.load(Ordering::Relaxed) {
-            number += 1;
             print!("[{}] ", Blue.paint(number.to_string()));
         }
-
-        if ! matches.is_present("override") && ( file_path.is_file() || iqdb_file_exists ) {
-            for entry in read_dir(&dir_path).unwrap() {
-                let entry_file_name = entry.unwrap().file_name();
-                if entry_file_name.to_str().unwrap().contains(file_path.to_str().unwrap()) {
-                    //TODO: Fix when iqdb comes online
-                    println!("{:?}", entry_file_name);
-                }
-            }
         
-            println!("{} {} in {}", 
-            name.as_str(),
-            Blue.paint("already exists"),
-            dir);
-        }
-        else if iqdb_not_found {
-            println!("{} on iqdb.org\n\t{}", 
-            Red.paint("Image not found"),
-            &iqdb_link);
-        }
-        else if iqdb_no_image_link_found {
-            println!("Image found on iqdb.org but {}\n\t{}", 
-                    Yellow.paint("can not be downloaded automatically"), 
-                    &iqdb_link);
-        }
-        else {
-            print!("Downloading {} to {} ", name.as_str(), dir);
-
-            if matches.is_present("debug") {
-                println!("");
-            }
-            
-            // Iterate over found image urls until a with data is produced
-            // TODO: Download from chan.sankakucomplex.com
-            // TODO: Give error if no link works, check if break is called in for loop!
-            for url in img_links.iter() {
-                let extension = url.split(".").last().expect("No extension found");
-                debug_output("extension", extension);
-                file_path.set_extension(extension);
-
-                debug_output("Trying", url.as_str());
-
-                // TODO: Better error handling
-                let mut resp: Response = attohttpc::get(url)
-                    .header(USER_AGENT, USER_AGENT_VALUE).send().unwrap();
-
-                debug_output("name", &file_path.as_os_str().to_str().unwrap());
-                
-                let mut file: File = File::create(&file_path.as_os_str()).expect("Could not create file");
-                std::io::copy(&mut resp, &mut file).expect("Could not download image to file");
-
-                let size = std::fs::metadata(&file_path).unwrap().len();
-                // Stupid solution where image must be larger than 1 kB as not to download a 404 page or something as an image
-                // TODO: fix this, possible to check if image is valid?
-                debug_output("size", &size.to_string());
-                // Break if downloaded file contains data
-                if file_path.exists() && size > 1000 {
-                    break;
-                }
-            }
-
-            println!("{}", Green.paint("Done"));
-        }
+        // Downloads file
+        file_path = download(matches.clone(), &dir_path, &dir, &img, img_links.clone());
 
         if update_modify_date {
             debug_output("file path", file_path.to_str().unwrap());
@@ -313,6 +153,190 @@ fn debug_output(title: &str, message: &str) {
     if DEBUG.load(Ordering::Relaxed) {
         println!("[{}] {} &", Purple.paint(title), message);
     }
+}
+
+/// Downloads file and returns file path of the downloaded file
+fn download<P: AsRef<Path>, S: AsRef<str>>(matches: ArgMatches, 
+            dir_path: P,
+            dir: S,
+            img: S,
+            mut img_links: Vec<String>,
+    ) -> PathBuf {
+
+    // true if iqdb does not find image
+    let mut iqdb_not_found: bool = false;
+    // true if file exists in dir
+    let mut iqdb_file_exists: bool = false;
+    // true if iqdb finds links but lynx can not find any image links 
+    let mut iqdb_no_image_link_found: bool = false;
+    // Link to iqdb image search for current image
+    let mut iqdb_link: String = String::new();
+    // Name for image
+    let mut name: String;
+    // Path for new file
+    let mut file_path: PathBuf;
+    // Name without an extension
+    let file_name : String;
+
+    // Create name for image
+    name = img.as_ref().split("/").filter(|&s| !s.is_empty()).last().unwrap().to_string();
+    file_name = name.split(".").collect::<Vec<_>>()[0].to_string();
+    file_path = dir_path.as_ref().join(&name);
+
+    if matches.is_present("iqdb") && ( !file_path.is_file() || matches.is_present("override") ) {
+        // Get name without extension or 's' for thumbnails
+        name = name.replace("s", "");
+        file_path = dir_path.as_ref().join(name.as_str());
+
+        // Check if a file with the same name exists (ignores file extension)
+        let files = read_dir(&dir_path).expect("Could not read directory");
+        let mut exists = false;
+        for file in files {
+            if file.unwrap().path().to_str().unwrap().contains(&file_name) && ! matches.is_present("override") {
+                    exists = true;
+                    break;
+            }
+        }
+        
+        if exists {
+            iqdb_file_exists = true;
+        }
+        else {
+            // Getting extension here should not be necessary 
+
+            debug_output("img", &img.as_ref().clone());
+
+            // Create link to iqdb image search for current image (used if no image is found)
+            // TODO: grab iqdb link directly from site?
+            iqdb_link = format!("https://iqdb.org/?url={}", img.as_ref());
+            debug_output("iqdb_link", &iqdb_link);
+            
+            // Lists all links on site and removes non useful links
+            let mut iqdb_urls: Vec<String> = get_links( &iqdb_link)
+                            // Get all links before the '#' link (since all after are irrelevant)
+                            .split(|n| n == &"#".to_string())
+                            .collect::<Vec<_>>()[0].to_vec()
+                            // Format links
+                            .into_iter()
+                            // Remove first element ('/' link)
+                            .filter(|n| n != "/")
+                            .map(|n| n.replace("//", "https://"))
+                            .collect();
+            
+            // That site being the first link found means that the "No relevant matches" message is displayed
+            if ! iqdb_urls.is_empty() && iqdb_urls[0].contains("saucenao.com/search.php") {
+                iqdb_urls = Vec::new();
+            }
+
+            debug_output("urls from iqdb", &format!("{:#?}", iqdb_urls));
+
+            img_links = Vec::new();
+            // Use all source links to find images and take all image links found
+            for url in iqdb_urls.iter() {
+                debug_output("loop url", url);
+                // Create array of image links found at url given by iqdb
+                let mut new_imgs = get_links(url).into_iter()
+                                            .filter(|n| (
+                                                n.ends_with(".jpg") || 
+                                                n.ends_with(".gif") || 
+                                                n.ends_with(".png") || 
+                                                n.ends_with(".jpeg") || 
+                                                n.ends_with(".webm") ) &&
+                                                !n.contains("url="))
+                                            .collect::<Vec<_>>();
+                debug_output("new imgs", &format!("{:#?}", new_imgs));
+
+                img_links.append(&mut new_imgs);
+            }
+
+            debug_output("img links", &format!("{:#?}", img_links));
+
+            // If no image is found
+            if iqdb_urls.is_empty() {
+                iqdb_not_found = true;
+            }
+            if img_links.is_empty() {
+                iqdb_no_image_link_found = true;
+            }
+        }
+    }
+    else {
+        img_links = vec!(img.as_ref().to_string());
+    }
+
+    if ! matches.is_present("override") && ( file_path.is_file() || iqdb_file_exists ) {
+        for entry in read_dir(&dir_path).unwrap() {
+            let entry_file_name = entry.unwrap().file_name();
+            if entry_file_name.to_str().unwrap().contains(&file_path.to_str().unwrap()) {
+                //TODO: Fix when iqdb comes online
+                println!("{:?}", entry_file_name);
+            }
+        }
+    
+        println!("{} {} in {}", 
+        name.as_str(),
+        Blue.paint("already exists"), dir.as_ref());
+    }
+    else if iqdb_not_found {
+        println!("{} on iqdb.org\n\t{}", 
+        Red.paint("Image not found"),
+        &iqdb_link);
+    }
+    else if iqdb_no_image_link_found {
+        println!("Image found on iqdb.org but {}\n\t{}", 
+                Yellow.paint("can not be downloaded automatically"), 
+                &iqdb_link);
+    }
+    else {
+        print!("Downloading {} to {} ", name.as_str(), dir.as_ref());
+
+        if matches.is_present("debug") {
+            println!("");
+        }
+        
+        // Iterate over found image urls until a with data is produced
+        // TODO: Download from chan.sankakucomplex.com
+        // TODO: Give error if no link works, check if break is called in for loop!
+        for url in img_links.iter() {
+            let extension = url.split(".").last().expect("No extension found");
+            debug_output("extension", extension);
+            file_path.set_extension(extension);
+
+            debug_output("Trying", url.as_str());
+
+            // TODO: Better error handling
+            let mut resp: Response = attohttpc::get(url)
+                .header(USER_AGENT, USER_AGENT_VALUE).send().unwrap();
+
+            debug_output("name", &file_path.as_os_str().to_str().unwrap());
+            
+            let mut file: File = File::create(&file_path.as_os_str()).expect("Could not create file");
+            std::io::copy(&mut resp, &mut file).expect("Could not download image to file");
+
+            let size = std::fs::metadata(&file_path).unwrap().len();
+            // Stupid solution where image must be larger than 1 kB as not to download a 404 page or something as an image
+            // TODO: fix this, possible to check if image is valid?
+            debug_output("size", &size.to_string());
+            // Break if downloaded file contains data
+            if file_path.exists() && size > 1000 {
+                break;
+            }
+        }
+
+        println!("{}", Green.paint("Done"));
+    }
+    return file_path;
+}
+
+/// Returns all lines in a file as a Vector
+fn file_to_vec() -> Result<Vec<String>, String> {
+    let res: Vec<String> = Vec::new();
+    let file = File::open("threads.txt").unwrap();
+    let mut buf_reader = BufReader::new(file);
+    let mut contents = String::new();
+    buf_reader.read_line(&mut contents).unwrap();
+    println!("{:?}", res);
+    return Ok(res);
 }
 
 /// Returns HTML Document of given site

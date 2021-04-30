@@ -1,4 +1,4 @@
-use clap::{App, AppSettings, Arg};
+use clap::{App, AppSettings, Arg, SubCommand};
 
 pub fn build_cli() -> App<'static, 'static> {
     App::new("4Chan Image Downloader")
@@ -44,4 +44,6 @@ pub fn build_cli() -> App<'static, 'static> {
             .arg(Arg::with_name("url")
                 .help("Link to 4chan thread")
                 .required(true))
+            .subcommand(SubCommand::with_name("update")
+                .about("Updates downloaded threads using the threads.txt file in current directory"))
 }
