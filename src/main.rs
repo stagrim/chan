@@ -27,7 +27,6 @@ const USER_AGENT_VALUE: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:87.0) Gecko/2
 fn main() {
     let matches = cli::build_cli().get_matches();
     let mut update_modify_date: bool = false;
-    let url: String = matches.value_of("url").expect("No url provided").to_string();
 
     // Enables debug output if flag is present
     if matches.is_present("debug") {
@@ -49,21 +48,37 @@ fn main() {
     match matches.subcommand() {
         ("update", _) => {
             // TODO: Implement update subcommand
-            println!("{:#?}", threads);
+            for url in threads {
+                debug_output("update url", &url);
+                chan(&url, 
+                    update_modify_date, 
+                    // TODO: Save given dir to threads.txt
+                    None, 
+                    // iqdb is not supported with update
+                    false,
+                    // TODO: Make override a global option like update_modify_date
+                    false
+                );
+            }
         },
-        _ => {
+        ("download", Some(args)) => {
+            let url: String = args.value_of("url").expect("No url provided").to_string();
+
             // Add link to threads file for 'update' subcommand if not present
             threads.push(url.to_string());
             threads.dedup();
-            vec_to_file(threads);
 
             chan(&url, 
                 update_modify_date, 
-                matches.value_of("directory"), 
-                matches.is_present("iqdb"),
-                matches.is_present("override")
+                args.value_of("directory"), 
+                args.is_present("iqdb"),
+                args.is_present("override")
             );
+
+            // Saves threads after chan() call to avoid non-working links
+            vec_to_file(threads);
         }
+        _ => println!("No Subcommands; how is this possible?"),
     }
 }
 
@@ -398,6 +413,7 @@ fn get_links(url: &str) -> Vec<String> {
 
 /// Returns a folder name with the "{thread-id} - {thread subject}" pattern
 fn get_name<S: AsRef<str>>(url: S) -> String {
+    //TODO: Add 404 management and remove link from threads.txt
     let doc = get_html(&url.as_ref()).expect("Could not fetch site");
         let thread_number: String = url.as_ref().split("/").filter(|&s| !s.is_empty()).collect::<Vec<_>>().last().unwrap().to_string();
         let mut subject_node = doc.find(Class("subject")).collect::<Vec<_>>();
