@@ -7,6 +7,7 @@ pub fn build_cli() -> App<'static, 'static> {
             .version("0.1")
             // .author("Esbjörn S. <me@stagrim.com>")
             .about("Download 4chan images")
+            //TODO: Add subcommand download
             // Convert to subcommand?
             .arg(Arg::with_name("iqdb")
                 .short("i")

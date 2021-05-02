@@ -5,18 +5,18 @@ extern crate ansi_term;
 extern crate filetime;
 
 use attohttpc::Response;
-use clap::ArgMatches;
 use select::{document::Document, predicate::{Class, Name}};
-use std::{io::BufReader, sync::atomic::{AtomicBool, Ordering}};
+use std::{io::Write, sync::atomic::{AtomicBool, Ordering}};
 use std::path::{Path, PathBuf};
-use std::fs::{File, create_dir, read_dir};
-use std::io::prelude::*;
+use std::fs::{File, create_dir, read_dir, read_to_string};
 use ansi_term::Color::*;
 use filetime::set_file_mtime;
 
 mod cli;
 
 //TODO: To increase speed search for new links if an image has not been found or does not work.
+//TODO: Download file as tmp file that autodeletes until fully downloaded
+//TODO: Add progress bar
 static DEBUG: AtomicBool = AtomicBool::new(false);
 static PRINT_NUMBERED: AtomicBool = AtomicBool::new(true);
 
@@ -26,14 +26,8 @@ const USER_AGENT_VALUE: &str = "Mozilla/5.0 (X11; Linux x86_64; rv:87.0) Gecko/2
 
 fn main() {
     let matches = cli::build_cli().get_matches();
-    let url: String = matches.value_of("url").expect("No url provided").to_string();
-    let dir: String;
-    let dir_path: PathBuf;
     let mut update_modify_date: bool = false;
-    let mut number: i32 = 0;
-    let mut urls: Vec<String>;
-    // Contains links to images that is to be downloaded
-    let img_links: Vec<String> = Vec::new();
+    let url: String = matches.value_of("url").expect("No url provided").to_string();
 
     // Enables debug output if flag is present
     if matches.is_present("debug") {
@@ -47,8 +41,51 @@ fn main() {
         update_modify_date = true;
     }
 
-    if matches.value_of("directory").is_some() {
-        dir = matches.value_of("directory").unwrap().to_string();
+    let mut threads = match file_to_vec() {
+        Ok(f) => f,
+        Err(_) => Vec::new(),
+    };
+
+    match matches.subcommand() {
+        ("update", _) => {
+            // TODO: Implement update subcommand
+            println!("{:#?}", threads);
+        },
+        _ => {
+            // Add link to threads file for 'update' subcommand if not present
+            threads.push(url.to_string());
+            threads.dedup();
+            vec_to_file(threads);
+
+            chan(&url, 
+                update_modify_date, 
+                matches.value_of("directory"), 
+                matches.is_present("iqdb"),
+                matches.is_present("override")
+            );
+        }
+    }
+}
+
+// The procedure of grabbing information to downloading the images from the thread
+fn chan<S: AsRef<str>>(
+        url: S, 
+        update_modify_date: bool,
+        param_dir: Option<&str>,
+        iqdb: bool,
+        override_enabled: bool
+) {
+    let url: String = url.as_ref().to_string();
+    let dir: String;
+    let dir_path: PathBuf;
+    let mut number: i32 = 0;
+    let mut urls: Vec<String>;
+    // Contains links to images that is to be downloaded
+    let img_links: Vec<String> = Vec::new();
+
+
+    if param_dir.is_some() {
+        dir = param_dir.unwrap().to_string();
         // TODO: Add other non permitted characters
         if dir.contains("/") {
             println!("{} directory cannot contain '/' character", Red.paint("Error:"));
@@ -56,35 +93,13 @@ fn main() {
         }
     }
     else {
-
-        let doc = get_html(&url).expect("Could not fetch site");
-        let thread_number: String = url.split("/").filter(|&s| !s.is_empty()).collect::<Vec<_>>().last().unwrap().to_string();
-        let mut subject_node = doc.find(Class("subject")).collect::<Vec<_>>();
-
-        // TODO: More elegant solution instead of if, if, if ...
-        if subject_node.is_empty() {
-            subject_node = doc.find(Class("name")).collect::<Vec<_>>();
-        }
-        if subject_node.is_empty() {
-            // Class on archived.moe
-            subject_node = doc.find(Class("post_title")).collect::<Vec<_>>();
-        }
-
-        let subject: String;
-        if subject_node.is_empty() {
-            subject = "title".to_string();
-        }
-        else {
-            subject = subject_node.first().unwrap().text().replace("/", " ");
-        }
-
-        dir = format!("{} - {}", thread_number, subject);
+        dir = get_name(&url);
     }
     dir_path = Path::new(".").join(&dir);
     
     println!("Downloading images to {}/", Cyan.paint(&dir));
 
-    if matches.is_present("iqdb") {
+    if iqdb {
         // dumps thumbnails image links on site to 'urls' to use with iqdb
         urls = get_links(&url).into_iter()
                 // Grab only thumbnail images
@@ -132,13 +147,19 @@ fn main() {
         // Path for new file
         let file_path: PathBuf;
 
-        if matches.is_present("print-numbered") {
+        if PRINT_NUMBERED.load(Ordering::Relaxed) {
             number += 1;
             print!("[{}] ", Blue.paint(number.to_string()));
         }
         
         // Downloads file
-        file_path = download(matches.clone(), &dir_path, &dir, &img, img_links.clone());
+        file_path = download(
+            &dir_path,
+            &dir, &img, 
+            img_links.clone(), 
+            override_enabled,
+            iqdb
+        );
 
         if update_modify_date {
             debug_output("file path", file_path.to_str().unwrap());
@@ -156,11 +177,13 @@ fn debug_output(title: &str, message: &str) {
 }
 
 /// Downloads file and returns file path of the downloaded file
-fn download<P: AsRef<Path>, S: AsRef<str>>(matches: ArgMatches, 
+fn download<P: AsRef<Path>, S: AsRef<str>>(
             dir_path: P,
             dir: S,
             img: S,
             mut img_links: Vec<String>,
+            override_enabled: bool,
+            iqdb: bool
     ) -> PathBuf {
 
     // true if iqdb does not find image
@@ -183,7 +206,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(matches: ArgMatches,
     file_name = name.split(".").collect::<Vec<_>>()[0].to_string();
     file_path = dir_path.as_ref().join(&name);
 
-    if matches.is_present("iqdb") && ( !file_path.is_file() || matches.is_present("override") ) {
+    if iqdb && ( !file_path.is_file() || override_enabled ) {
         // Get name without extension or 's' for thumbnails
         name = name.replace("s", "");
         file_path = dir_path.as_ref().join(name.as_str());
@@ -192,7 +215,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(matches: ArgMatches,
         let files = read_dir(&dir_path).expect("Could not read directory");
         let mut exists = false;
         for file in files {
-            if file.unwrap().path().to_str().unwrap().contains(&file_name) && ! matches.is_present("override") {
+            if file.unwrap().path().to_str().unwrap().contains(&file_name) && ! override_enabled {
                     exists = true;
                     break;
             }
@@ -264,7 +287,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(matches: ArgMatches,
         img_links = vec!(img.as_ref().to_string());
     }
 
-    if ! matches.is_present("override") && ( file_path.is_file() || iqdb_file_exists ) {
+    if ! override_enabled && ( file_path.is_file() || iqdb_file_exists ) {
         for entry in read_dir(&dir_path).unwrap() {
             let entry_file_name = entry.unwrap().file_name();
             if entry_file_name.to_str().unwrap().contains(&file_path.to_str().unwrap()) {
@@ -290,7 +313,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(matches: ArgMatches,
     else {
         print!("Downloading {} to {} ", name.as_str(), dir.as_ref());
 
-        if matches.is_present("debug") {
+        if DEBUG.load(Ordering::Relaxed) {
             println!("");
         }
         
@@ -330,12 +353,12 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(matches: ArgMatches,
 
 /// Returns all lines in a file as a Vector
 fn file_to_vec() -> Result<Vec<String>, String> {
-    let res: Vec<String> = Vec::new();
-    let file = File::open("threads.txt").unwrap();
-    let mut buf_reader = BufReader::new(file);
-    let mut contents = String::new();
-    buf_reader.read_line(&mut contents).unwrap();
-    println!("{:?}", res);
+    let res: Vec<String>;
+    let contents;
+    // TODO: Error handling when no file found
+    contents = read_to_string("threads.txt")
+        .expect("threads.txt not found");
+    res = contents.split_whitespace().map(|s| s.trim().to_string()).collect::<Vec<String>>();
     return Ok(res);
 }
 
@@ -371,4 +394,40 @@ fn get_links(url: &str) -> Vec<String> {
         .filter_map(|n| n.attr("href"))
         .for_each(|n| res.push(n.to_string()));
     return res
+}
+
+/// Returns a folder name with the "{thread-id} - {thread subject}" pattern
+fn get_name<S: AsRef<str>>(url: S) -> String {
+    let doc = get_html(&url.as_ref()).expect("Could not fetch site");
+        let thread_number: String = url.as_ref().split("/").filter(|&s| !s.is_empty()).collect::<Vec<_>>().last().unwrap().to_string();
+        let mut subject_node = doc.find(Class("subject")).collect::<Vec<_>>();
+
+        // TODO: More elegant solution instead of if, if, if ...
+        if subject_node.first().unwrap().text().is_empty() {
+            subject_node = doc.find(Class("name")).collect::<Vec<_>>();
+        }
+        if subject_node.first().unwrap().text().is_empty() {
+            // Class on archived.moe
+            subject_node = doc.find(Class("post_title")).collect::<Vec<_>>();
+        }
+
+        let subject: String;
+        if subject_node.first().unwrap().text().is_empty() {
+            subject = "title".to_string();
+        }
+        else {
+            subject = subject_node.first().unwrap().text().replace("/", " ");
+        }
+
+        return format!("{} - {}", thread_number, subject);
+}
+
+/// Removes existing file and writes links from Vec to it
+fn vec_to_file(vec: Vec<String>) {
+    // std::fs::remove_file("threads.txt");
+    let mut file = File::create("threads.txt").expect("Could not create file");
+
+	for l in vec.iter() {
+		file.write(format!("{}\n", l).as_bytes()).expect("Could not write to file");
+	}
 }
