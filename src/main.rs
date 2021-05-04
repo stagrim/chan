@@ -48,12 +48,12 @@ fn main() {
     match matches.subcommand() {
         ("update", _) => {
             // TODO: Implement update subcommand
-            for url in threads {
-                debug_output("update url", &url);
-                chan(&url, 
+            for thread in threads {
+                debug_output("update url", &thread.0);
+                chan(&thread.0, 
                     update_modify_date, 
                     // TODO: Save given dir to threads.txt
-                    None, 
+                    Some(&thread.1), 
                     // iqdb is not supported with update
                     false,
                     // TODO: Make override a global option like update_modify_date
@@ -64,16 +64,16 @@ fn main() {
         ("download", Some(args)) => {
             let url: String = args.value_of("url").expect("No url provided").to_string();
 
-            // Add link to threads file for 'update' subcommand if not present
-            threads.push(url.to_string());
-            threads.dedup();
-
-            chan(&url, 
+            let thread = chan(&url, 
                 update_modify_date, 
                 args.value_of("directory"), 
                 args.is_present("iqdb"),
                 args.is_present("override")
             );
+
+            // Add link to threads file for 'update' subcommand if not present
+            threads.dedup();
+            threads.push(thread.clone());
 
             // Saves threads after chan() call to avoid non-working links
             vec_to_file(threads);
@@ -89,7 +89,7 @@ fn chan<S: AsRef<str>>(
         param_dir: Option<&str>,
         iqdb: bool,
         override_enabled: bool
-) {
+) -> (String, String) {
     let url: String = url.as_ref().to_string();
     let dir: String;
     let dir_path: PathBuf;
@@ -183,6 +183,8 @@ fn chan<S: AsRef<str>>(
         }
         
     }
+
+    return (url, dir);
 }
 
 fn debug_output(title: &str, message: &str) {
@@ -367,13 +369,21 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
 }
 
 /// Returns all lines in a file as a Vector
-fn file_to_vec() -> Result<Vec<String>, String> {
-    let res: Vec<String>;
+fn file_to_vec() -> Result<Vec<(String, String)>, String> {
+    let res: Vec<(String, String)>;
     let contents;
     // TODO: Error handling when no file found
     contents = read_to_string("threads.txt")
         .expect("threads.txt not found");
-    res = contents.split_whitespace().map(|s| s.trim().to_string()).collect::<Vec<String>>();
+    res = contents
+                // Remove whitespace and special characters
+                .split("\n").map(|s| s.trim().to_string()).filter(|s| ! s.is_empty())
+                // Convert format to tuple
+                .map(|s| {
+                    let t: (&str, &str) = s.split_once(";").expect("Could not split String");
+                    // Convert (&str, &str) to (String, String)
+                    (t.0.to_string(), t.1.to_string())
+                }).collect();
     return Ok(res);
 }
 
@@ -438,12 +448,12 @@ fn get_name<S: AsRef<str>>(url: S) -> String {
         return format!("{} - {}", thread_number, subject);
 }
 
-/// Removes existing file and writes links from Vec to it
-fn vec_to_file(vec: Vec<String>) {
+/// Removes existing file and writes links from Vec with the format (String, String) to it
+fn vec_to_file(vec: Vec<(String, String)>) {
     // std::fs::remove_file("threads.txt");
     let mut file = File::create("threads.txt").expect("Could not create file");
 
 	for l in vec.iter() {
-		file.write(format!("{}\n", l).as_bytes()).expect("Could not write to file");
+		file.write(format!("{};{}\n", l.0, l.1).as_bytes()).expect("Could not write to file");
 	}
 }
