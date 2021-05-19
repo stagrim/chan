@@ -6,7 +6,7 @@ extern crate filetime;
 
 use attohttpc::Response;
 use select::{document::Document, predicate::{Class, Name}};
-use std::{io::Write, sync::atomic::{AtomicBool, Ordering}};
+use std::{io::Write, process, sync::atomic::{AtomicBool, Ordering}};
 use std::path::{Path, PathBuf};
 use std::fs::{File, create_dir, read_dir, read_to_string};
 use ansi_term::Color::*;
@@ -17,6 +17,8 @@ mod cli;
 //TODO: To increase speed search for new links if an image has not been found or does not work.
 //TODO: Download file as tmp file that autodeletes until fully downloaded
 //TODO: Add progress bar
+//TODO: add renaming subcommand where folder name & name in threads.txt are updated
+//TODO: Add set title flag which, unlike '-d', only changed the title of "<thread_id> - <title>"
 static DEBUG: AtomicBool = AtomicBool::new(false);
 static PRINT_NUMBERED: AtomicBool = AtomicBool::new(true);
 
@@ -46,6 +48,7 @@ fn main() {
     };
 
     match matches.subcommand() {
+        // TODO: Only print new downloads to terminal
         ("update", _) => {
             // TODO: Implement update subcommand
             for thread in threads {
@@ -71,12 +74,15 @@ fn main() {
                 args.is_present("override")
             );
 
-            // Add link to threads file for 'update' subcommand if not present
-            threads.dedup();
-            threads.push(thread.clone());
+            if ! args.is_present("iqdb") {
+                // Add link to threads file for 'update' subcommand if not present
+                threads.dedup();
+                threads.push(thread.clone());
 
-            // Saves threads after chan() call to avoid non-working links
-            vec_to_file(threads);
+                // Saves threads after chan() call to avoid non-working links
+                debug_output("saving", "Saving url to file");
+                vec_to_file(threads);
+            }
         }
         _ => println!("No Subcommands; how is this possible?"),
     }
@@ -108,50 +114,74 @@ fn chan<S: AsRef<str>>(
         }
     }
     else {
-        dir = get_name(&url);
+        dir = match get_name(&url) {
+            Ok(t) => t,
+            Err(r) => {
+                if r.status() == 404 {
+                    println!("{} Thread {} could not be found, site returned 404 status error", Red.paint("Error:"), &url);
+                }
+                else {
+                    println!("{} Response error {} received from thread {}", Red.paint("Error:"), r.status(), &url)
+                }
+                process::exit(1);
+            }
+        };
     }
     dir_path = Path::new(".").join(&dir);
     
     println!("Downloading images to {}/", Cyan.paint(&dir));
 
-    if iqdb {
-        // dumps thumbnails image links on site to 'urls' to use with iqdb
-        urls = get_links(&url).into_iter()
+    // dumps thumbnails image links on site to 'urls' to use with iqdb
+    urls = match get_links(&url) { 
+        Ok(links) => {
+            if iqdb {
+                links.into_iter()
                 // Grab only thumbnail images
-                .filter(|n| n.contains("/thumb/"))
-                // Split at http to separate the two links and get the second one
-                .map(|n|
-                    format!("http{}", n.split("http")
-                    .filter(|&s| !s.is_empty())
-                    .filter(|&n| (
+                .filter(|n| (
                         n.ends_with(".jpg") || 
                         n.ends_with(".gif") || 
                         n.ends_with(".png") || 
                         n.ends_with(".jpeg") || 
-                        n.ends_with(".webm") ) &&
-                        !n.contains("url="))
-                    .collect::<Vec<_>>()
-                    .last().unwrap().to_string()))
-                .collect();
-    }
-    else {
-        urls = get_links(&url).into_iter()
+                        n.ends_with(".webm")
+                    ) &&
+                    !n.contains("url=") &&
+                    n.contains("/thumb/"))
+                    // Split at http to separate the two links and get the second one
+                    .map(|n|
+                        format!("http{}", n.split("http")
+                        .filter(|&s| !s.is_empty())
+                        .collect::<Vec<_>>()
+                        .last().unwrap().to_string()))
+                        .collect()
+            }
+            else {
+                links.into_iter()
                 .filter(|n| (
-                    n.ends_with(".jpg") || 
-                    n.ends_with(".gif") || 
-                    n.ends_with(".png") || 
-                    n.ends_with(".jpeg") || 
-                    n.ends_with(".webm") ) &&
+                        n.ends_with(".jpg") || 
+                        n.ends_with(".gif") || 
+                        n.ends_with(".png") || 
+                        n.ends_with(".jpeg") || 
+                        n.ends_with(".webm") 
+                    ) &&
                     !n.contains("url=") &&
                     // Filter away all thumbnail images and only keep the hi-res ones
                     !n.contains("/thumb/"))
                     .map(|n| n.replace("//", "https://"))
-                .collect();
-    }
+                    .collect()
+            }
+        },
+        Err(r) => {
+            if r.status() == 404 {
+                println!("Thread {} has been archived, removing from file", &url);
+                // TODO: chan returns results. Use enums for error type? like: RemoveThread to remove from list?
+            }
+            Vec::new()
+        }
+    };
 
     urls.dedup();
-
-    debug_output("urls_vec", "urls filled");
+    
+    debug_output("urls_vec", format!("{:#?}", urls).as_str());
 
     // Create directory if it does not exist
     if ! dir_path.is_dir() {
@@ -239,6 +269,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
         }
         
         if exists {
+            // 
             iqdb_file_exists = true;
         }
         else {
@@ -252,7 +283,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             debug_output("iqdb_link", &iqdb_link);
             
             // Lists all links on site and removes non useful links
-            let mut iqdb_urls: Vec<String> = get_links( &iqdb_link)
+            let mut iqdb_urls: Vec<String> = get_links( &iqdb_link).unwrap()
                             // Get all links before the '#' link (since all after are irrelevant)
                             .split(|n| n == &"#".to_string())
                             .collect::<Vec<_>>()[0].to_vec()
@@ -260,7 +291,8 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
                             .into_iter()
                             // Remove first element ('/' link)
                             .filter(|n| n != "/")
-                            .map(|n| n.replace("//", "https://"))
+                            // Conditioned because sometimes links already starts with "https://"
+                            .map(|n| if n.starts_with("//") { n.replace("//", "https://") } else { n } )
                             .collect();
             
             // That site being the first link found means that the "No relevant matches" message is displayed
@@ -275,7 +307,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             for url in iqdb_urls.iter() {
                 debug_output("loop url", url);
                 // Create array of image links found at url given by iqdb
-                let mut new_imgs = get_links(url).into_iter()
+                let mut new_imgs = get_links(url).unwrap().into_iter()
                                             .filter(|n| (
                                                 n.ends_with(".jpg") || 
                                                 n.ends_with(".gif") || 
@@ -373,8 +405,7 @@ fn file_to_vec() -> Result<Vec<(String, String)>, String> {
     let res: Vec<(String, String)>;
     let contents;
     // TODO: Error handling when no file found
-    contents = read_to_string("threads.txt")
-        .expect("threads.txt not found");
+    contents = read_to_string("threads.txt").expect("threads.txt not found");
     res = contents
                 // Remove whitespace and special characters
                 .split("\n").map(|s| s.trim().to_string()).filter(|s| ! s.is_empty())
@@ -388,19 +419,16 @@ fn file_to_vec() -> Result<Vec<(String, String)>, String> {
 }
 
 /// Returns HTML Document of given site
-fn get_html(url: &str) -> Result<Document, String> {
+fn get_html(url: &str) -> Result<Document, Response> {
     // TODO: proper error in case of connection error
-    let resp: Response =  match attohttpc::get(url).header(USER_AGENT, USER_AGENT_VALUE).send() {
+    let resp: Response = match attohttpc::get(url).header(USER_AGENT, USER_AGENT_VALUE).send() {
         Ok(r) => r,
-        Err(_) => {
-                    debug_output("status error on", url);
-                    return Err(format!("Device may be offline"));
-                },
+        Err(_) => panic!("Could not create Response for thread {}", url),
     };
 
     if !resp.is_success() {
         debug_output("status error on", url);
-        return Err(format!("Site returned {} error status code", resp.status()))
+        return Err(resp)
     }
 
     let document = Document::from_read(resp).unwrap();
@@ -410,42 +438,48 @@ fn get_html(url: &str) -> Result<Document, String> {
 
 // TODO: Return Result and better error handling for connection issues, https error codes etc.
 /// Returns Vector with all links found in anchor tags on given site
-fn get_links(url: &str) -> Vec<String> {
+fn get_links(url: &str) -> Result<Vec<String>, Response> {
     let mut res: Vec<String> = Vec::new();
 
-    get_html(url)
-        .unwrap()
-        .find(Name("a"))
-        .filter_map(|n| n.attr("href"))
-        .for_each(|n| res.push(n.to_string()));
-    return res
+    match get_html(url) {
+        Ok(d) => { d.find(Name("a"))
+                            .filter_map(|n| n.attr("href"))
+                            .for_each(|n| res.push(n.to_string()))
+            },
+        Err(r) => return Err(r)
+    }
+    return Ok(res)
 }
 
 /// Returns a folder name with the "{thread-id} - {thread subject}" pattern
-fn get_name<S: AsRef<str>>(url: S) -> String {
+fn get_name<S: AsRef<str>>(url: S) -> Result<String, Response> {
+    debug_output("get_name url", url.as_ref());
     //TODO: Add 404 management and remove link from threads.txt
-    let doc = get_html(&url.as_ref()).expect("Could not fetch site");
+    let doc = match get_html(&url.as_ref()) {
+        Ok(d) => d,
+        Err(r) => return Err(r)
+    };
         let thread_number: String = url.as_ref().split("/").filter(|&s| !s.is_empty()).collect::<Vec<_>>().last().unwrap().to_string();
         let mut subject_node = doc.find(Class("subject")).collect::<Vec<_>>();
 
         // TODO: More elegant solution instead of if, if, if ...
-        if subject_node.first().unwrap().text().is_empty() {
+        if subject_node.first().is_none() || subject_node.first().unwrap().text().is_empty() {
             subject_node = doc.find(Class("name")).collect::<Vec<_>>();
         }
-        if subject_node.first().unwrap().text().is_empty() {
+        if subject_node.first().is_none() || subject_node.first().unwrap().text().is_empty() {
             // Class on archived.moe
             subject_node = doc.find(Class("post_title")).collect::<Vec<_>>();
         }
 
         let subject: String;
-        if subject_node.first().unwrap().text().is_empty() {
+        if subject_node.first().is_none() {
             subject = "title".to_string();
         }
         else {
             subject = subject_node.first().unwrap().text().replace("/", " ");
         }
 
-        return format!("{} - {}", thread_number, subject);
+        return Ok(format!("{} - {}", thread_number, subject));
 }
 
 /// Removes existing file and writes links from Vec with the format (String, String) to it
