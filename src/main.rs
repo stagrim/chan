@@ -6,7 +6,8 @@ extern crate filetime;
 
 use attohttpc::Response;
 use select::{document::Document, predicate::{Class, Name}};
-use std::{io::Write, process, sync::atomic::{AtomicBool, Ordering}};
+use core::time;
+use std::{io::Write, process, sync::atomic::{AtomicBool, Ordering}, thread};
 use std::path::{Path, PathBuf};
 use std::fs::{File, create_dir, read_dir, read_to_string};
 use ansi_term::Color::*;
@@ -14,9 +15,9 @@ use filetime::set_file_mtime;
 
 mod cli;
 
-//TODO: To increase speed search for new links if an image has not been found or does not work.
+//TODO: To increase speed search for new links if an image has not been found or does not work. (Use objects which has a 'call next link' method)
 //TODO: Download file as tmp file that autodeletes until fully downloaded
-//TODO: Add progress bar
+//TODO: Add progress bar, like when compiling with cargo
 //TODO: add renaming subcommand where folder name & name in threads.txt are updated
 //TODO: Add set title flag which, unlike '-d', only changed the title of "<thread_id> - <title>"
 static DEBUG: AtomicBool = AtomicBool::new(false);
@@ -166,7 +167,13 @@ fn chan<S: AsRef<str>>(
                     !n.contains("url=") &&
                     // Filter away all thumbnail images and only keep the hi-res ones
                     !n.contains("/thumb/"))
-                    .map(|n| n.replace("//", "https://"))
+                    .map(|n| 
+                        if ! n.starts_with("https://") { 
+                            n.replace("//", "https://") 
+                        } 
+                        else { 
+                            n 
+                        })
                     .collect()
             }
         },
@@ -250,26 +257,28 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
 
     // Create name for image
     name = img.as_ref().split("/").filter(|&s| !s.is_empty()).last().unwrap().to_string();
-    file_name = name.split(".").collect::<Vec<_>>()[0].to_string();
     file_path = dir_path.as_ref().join(&name);
 
+    //TODO: (Should this be moved to chan() instead?)
+    // This block is used with --iqdb flag and gathers all image links from all links that were scraped from the image search 
     if iqdb && ( !file_path.is_file() || override_enabled ) {
         // Get name without extension or 's' for thumbnails
         name = name.replace("s", "");
+        file_name = name.split(".").collect::<Vec<_>>()[0].to_string();
         file_path = dir_path.as_ref().join(name.as_str());
 
         // Check if a file with the same name exists (ignores file extension)
         let files = read_dir(&dir_path).expect("Could not read directory");
         let mut exists = false;
         for file in files {
-            if file.unwrap().path().to_str().unwrap().contains(&file_name) && ! override_enabled {
+            let file = file.unwrap();
+            if file.path().to_str().unwrap().contains(&file_name) && ! override_enabled {
                     exists = true;
                     break;
             }
         }
         
         if exists {
-            // 
             iqdb_file_exists = true;
         }
         else {
@@ -307,18 +316,29 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             for url in iqdb_urls.iter() {
                 debug_output("loop url", url);
                 // Create array of image links found at url given by iqdb
-                let mut new_imgs = get_links(url).unwrap().into_iter()
-                                            .filter(|n| (
-                                                n.ends_with(".jpg") || 
-                                                n.ends_with(".gif") || 
-                                                n.ends_with(".png") || 
-                                                n.ends_with(".jpeg") || 
-                                                n.ends_with(".webm") ) &&
-                                                !n.contains("url="))
-                                            .collect::<Vec<_>>();
+                let mut new_imgs = match get_links(url) {
+                    Ok(links) => {
+                        links.into_iter()
+                            .filter(|n| (
+                                n.ends_with(".jpg") || 
+                                n.ends_with(".gif") || 
+                                n.ends_with(".png") || 
+                                n.ends_with(".jpeg") || 
+                                n.ends_with(".webm") ) &&
+                                !n.contains("url="))
+                            .collect::<Vec<_>>()
+                    },
+                    Err(r) => {
+                        debug_output("Response error", format!("{} returned {}", url, r.status()).as_str());
+                        Vec::new()
+                    }
+                };
                 debug_output("new imgs", &format!("{:#?}", new_imgs));
 
-                img_links.append(&mut new_imgs);
+                // In case of error when new_imgs is empty
+                if ! new_imgs.is_empty() {
+                    img_links.append(&mut new_imgs);
+                }
             }
 
             debug_output("img links", &format!("{:#?}", img_links));
@@ -376,9 +396,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
 
             debug_output("Trying", url.as_str());
 
-            // TODO: Better error handling
-            let mut resp: Response = attohttpc::get(url)
-                .header(USER_AGENT, USER_AGENT_VALUE).send().unwrap();
+            let mut resp: Response = get_response(&url);
 
             debug_output("name", &file_path.as_os_str().to_str().unwrap());
             
@@ -393,6 +411,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             if file_path.exists() && size > 1000 {
                 break;
             }
+            // TODO: Remove old file less than 1000 bytes here, since it will stay if next image has another file extension
         }
 
         println!("{}", Green.paint("Done"));
@@ -418,13 +437,36 @@ fn file_to_vec() -> Result<Vec<(String, String)>, String> {
     return Ok(res);
 }
 
+fn get_response(url: &str) -> Response {
+    let resp: Response;
+    let mut i = 0;
+
+    loop {
+        resp = match attohttpc::get(url).header(USER_AGENT, USER_AGENT_VALUE).send() {
+            Ok(r) => r,
+            Err(_) => {
+                i += 1;
+                if i == 10 {
+                    // TODO: Instead of crashing, move on to next image?
+                    println!("{} Could not get a response, aborting", Red.paint("Error:"));
+                    process::exit(1)
+                }
+                println!("Could not get response, retrying...");
+                thread::sleep(time::Duration::from_secs(2));
+                continue
+            }
+        };
+        // If this is reached, then match returned Ok()
+        break
+    }
+    resp
+}
+
+// TODO: Handle redirects in loop to get to pointed site. (for archived.moe which redirects to other sites)
 /// Returns HTML Document of given site
 fn get_html(url: &str) -> Result<Document, Response> {
     // TODO: proper error in case of connection error
-    let resp: Response = match attohttpc::get(url).header(USER_AGENT, USER_AGENT_VALUE).send() {
-        Ok(r) => r,
-        Err(_) => panic!("Could not create Response for thread {}", url),
-    };
+    let resp: Response = get_response(&url);
 
     if !resp.is_success() {
         debug_output("status error on", url);
