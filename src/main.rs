@@ -50,7 +50,7 @@ fn main() {
 
     match matches.subcommand() {
         // TODO: Only print new downloads to terminal
-        ("update", _) => {
+        ("update", Some(args)) => {
             // TODO: Implement update subcommand
             for thread in threads {
                 debug_output("update url", &thread.0);
@@ -61,7 +61,9 @@ fn main() {
                     // iqdb is not supported with update
                     false,
                     // TODO: Make override a global option like update_modify_date
-                    false
+                    false,
+                    args.is_present("print-existing-images")
+                    
                 );
             }
         },
@@ -72,7 +74,8 @@ fn main() {
                 update_modify_date, 
                 args.value_of("directory"), 
                 args.is_present("iqdb"),
-                args.is_present("override")
+                args.is_present("override"),
+                true
             );
 
             if ! args.is_present("iqdb") {
@@ -95,7 +98,8 @@ fn chan<S: AsRef<str>>(
         update_modify_date: bool,
         param_dir: Option<&str>,
         iqdb: bool,
-        override_enabled: bool
+        override_enabled: bool,
+        print_existing_images: bool,
 ) -> (String, String) {
     let url: String = url.as_ref().to_string();
     let dir: String;
@@ -201,16 +205,18 @@ fn chan<S: AsRef<str>>(
 
         if PRINT_NUMBERED.load(Ordering::Relaxed) {
             number += 1;
-            print!("[{}] ", Blue.paint(number.to_string()));
         }
         
         // Downloads file
         file_path = download(
             &dir_path,
-            &dir, &img, 
+            &dir, 
+            &img, 
             img_links.clone(), 
             override_enabled,
-            iqdb
+            iqdb,
+            print_existing_images,
+            number
         );
 
         if update_modify_date {
@@ -237,7 +243,9 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             img: S,
             mut img_links: Vec<String>,
             override_enabled: bool,
-            iqdb: bool
+            iqdb: bool,
+            print_existing_images: bool,
+            number: i32,
     ) -> PathBuf {
 
     // true if iqdb does not find image
@@ -365,21 +373,39 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             }
         }
     
-        println!("{} {} in {}", 
-        name.as_str(),
-        Blue.paint("already exists"), dir.as_ref());
+        if print_existing_images {
+            if number != 0 {
+                print!("[{}] ", Blue.paint(number.to_string()));
+            }
+            println!("{} {} in {}", 
+                name.as_str(), 
+                Blue.paint("already exists"), 
+                dir.as_ref());
+        }
+        else {
+            debug_output("exists", name.as_str());
+        }
     }
     else if iqdb_not_found {
+        if number != 0 {
+            print!("[{}] ", Blue.paint(number.to_string()));
+        }
         println!("{} on iqdb.org\n\t{}", 
         Red.paint("Image not found"),
         &iqdb_link);
     }
     else if iqdb_no_image_link_found {
+        if number != 0 {
+            print!("[{}] ", Blue.paint(number.to_string()));
+        }
         println!("Image found on iqdb.org but {}\n\t{}", 
                 Yellow.paint("can not be downloaded automatically"), 
                 &iqdb_link);
     }
     else {
+        if number != 0 {
+            print!("[{}] ", Blue.paint(number.to_string()));
+        }
         print!("Downloading {} to {} ", name.as_str(), dir.as_ref());
 
         if DEBUG.load(Ordering::Relaxed) {
