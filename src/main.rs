@@ -7,11 +7,11 @@ extern crate filetime;
 use attohttpc::Response;
 use select::{document::Document, predicate::{Class, Name}};
 use core::time;
-use std::{io::Write, process, sync::atomic::{AtomicBool, Ordering}, thread};
+use std::{io::Write, process, sync::atomic::{AtomicBool, Ordering}, thread, time::SystemTime};
 use std::path::{Path, PathBuf};
 use std::fs::{File, create_dir, read_dir, read_to_string};
 use ansi_term::Color::*;
-use filetime::set_file_mtime;
+use filetime::{FileTime, set_file_mtime};
 
 mod cli;
 
@@ -104,7 +104,7 @@ fn chan<S: AsRef<str>>(
     let url: String = url.as_ref().to_string();
     let dir: String;
     let dir_path: PathBuf;
-    let mut number: i32 = 0;
+    let mut number: u64 = 0;
     let mut urls: Vec<String>;
     // Contains links to images that is to be downloaded
     let img_links: Vec<String> = Vec::new();
@@ -201,11 +201,9 @@ fn chan<S: AsRef<str>>(
 
     for img in urls.iter() {
         // Path for new file
-        let file_path: PathBuf;
+        let file_path: Option<PathBuf>;
 
-        if PRINT_NUMBERED.load(Ordering::Relaxed) {
-            number += 1;
-        }
+        number += 1;
         
         // Downloads file
         file_path = download(
@@ -219,10 +217,14 @@ fn chan<S: AsRef<str>>(
             number
         );
 
-        if update_modify_date {
+        if update_modify_date && file_path.is_some() {
+            let file_path = file_path.unwrap();
+            // Timestamp to assign to file
+            // By using the number variable and checked_add() method ensures that all files are at least 1 second apart to ensure correct order in file-managers
+            let new_timestamp: FileTime = FileTime::from_system_time(SystemTime::now().checked_add(time::Duration::from_secs(number)).unwrap());
             debug_output("file path", file_path.to_str().unwrap());
-            
-            set_file_mtime(file_path, filetime::FileTime::now()).expect("Could not update modified date");
+            debug_output("new_timestamp", new_timestamp.to_string().as_str());
+            set_file_mtime(file_path, new_timestamp).expect("Could not update modified date");
         }
         
     }
@@ -245,8 +247,8 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             override_enabled: bool,
             iqdb: bool,
             print_existing_images: bool,
-            number: i32,
-    ) -> PathBuf {
+            number: u64,
+    ) -> Option<PathBuf> {
 
     // true if iqdb does not find image
     let mut iqdb_not_found: bool = false;
@@ -282,6 +284,9 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             let file = file.unwrap();
             if file.path().to_str().unwrap().contains(&file_name) && ! override_enabled {
                     exists = true;
+                    // Updates name with the correct extension
+                    name = file.path().file_name().unwrap().to_str().unwrap().to_string();
+                    file_path = file.path();
                     break;
             }
         }
@@ -365,16 +370,8 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
     }
 
     if ! override_enabled && ( file_path.is_file() || iqdb_file_exists ) {
-        for entry in read_dir(&dir_path).unwrap() {
-            let entry_file_name = entry.unwrap().file_name();
-            if entry_file_name.to_str().unwrap().contains(&file_path.to_str().unwrap()) {
-                //TODO: Fix when iqdb comes online
-                println!("{:?}", entry_file_name);
-            }
-        }
-    
         if print_existing_images {
-            if number != 0 {
+            if PRINT_NUMBERED.load(Ordering::Relaxed) {
                 print!("[{}] ", Blue.paint(number.to_string()));
             }
             println!("{} {} in {}", 
@@ -387,23 +384,25 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
         }
     }
     else if iqdb_not_found {
-        if number != 0 {
+        if PRINT_NUMBERED.load(Ordering::Relaxed) {
             print!("[{}] ", Blue.paint(number.to_string()));
         }
         println!("{} on iqdb.org\n\t{}", 
         Red.paint("Image not found"),
         &iqdb_link);
+        return None;
     }
     else if iqdb_no_image_link_found {
-        if number != 0 {
+        if PRINT_NUMBERED.load(Ordering::Relaxed) {
             print!("[{}] ", Blue.paint(number.to_string()));
         }
         println!("Image found on iqdb.org but {}\n\t{}", 
                 Yellow.paint("can not be downloaded automatically"), 
                 &iqdb_link);
+        return None;
     }
     else {
-        if number != 0 {
+        if PRINT_NUMBERED.load(Ordering::Relaxed) {
             print!("[{}] ", Blue.paint(number.to_string()));
         }
         print!("Downloading {} to {} ", name.as_str(), dir.as_ref());
@@ -442,7 +441,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
 
         println!("{}", Green.paint("Done"));
     }
-    return file_path;
+    return Some(file_path);
 }
 
 /// Returns all lines in a file as a Vector
