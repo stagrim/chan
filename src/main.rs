@@ -58,6 +58,7 @@ fn main() {
                     update_modify_date, 
                     // TODO: Save given dir to threads.txt
                     Some(&thread.1), 
+                    None,
                     // iqdb is not supported with update
                     false,
                     // TODO: Make override a global option like update_modify_date
@@ -73,6 +74,7 @@ fn main() {
             let thread = chan(&url, 
                 update_modify_date, 
                 args.value_of("directory"), 
+                args.value_of("name"), 
                 args.is_present("iqdb"),
                 args.is_present("override"),
                 true
@@ -97,6 +99,7 @@ fn chan<S: AsRef<str>>(
         url: S, 
         update_modify_date: bool,
         param_dir: Option<&str>,
+        param_name: Option<&str>,
         iqdb: bool,
         override_enabled: bool,
         print_existing_images: bool,
@@ -118,8 +121,23 @@ fn chan<S: AsRef<str>>(
             std::process::exit(1);
         }
     }
+    else if param_name.is_some() {
+        let thread_id = match get_name(&url, true) {
+            Ok(t) => t,
+            Err(r) => {
+                if r.status() == 404 {
+                    println!("{} Thread {} could not be found, site returned 404 status error", Red.paint("Error:"), &url);
+                }
+                else {
+                    println!("{} Response error {} received from thread {}", Red.paint("Error:"), r.status(), &url)
+                }
+                process::exit(1);
+            }
+        };
+        dir = format!("{} - {}", thread_id, param_name.unwrap());
+    }
     else {
-        dir = match get_name(&url) {
+        dir = match get_name(&url, false) {
             Ok(t) => t,
             Err(r) => {
                 if r.status() == 404 {
@@ -519,7 +537,7 @@ fn get_links(url: &str) -> Result<Vec<String>, Response> {
 }
 
 /// Returns a folder name with the "{thread-id} - {thread subject}" pattern
-fn get_name<S: AsRef<str>>(url: S) -> Result<String, Response> {
+fn get_name<S: AsRef<str>>(url: S, only_thread_number: bool) -> Result<String, Response> {
     debug_output("get_name url", url.as_ref());
     //TODO: Add 404 management and remove link from threads.txt
     let doc = match get_html(&url.as_ref()) {
@@ -546,7 +564,12 @@ fn get_name<S: AsRef<str>>(url: S) -> Result<String, Response> {
             subject = subject_node.first().unwrap().text().replace("/", " ");
         }
 
-        return Ok(format!("{} - {}", thread_number, subject));
+        if only_thread_number {
+            return Ok(format!("{}", thread_number))
+        }
+        else {
+            return Ok(format!("{} - {}", thread_number, subject));
+        }
 }
 
 /// Removes existing file and writes links from Vec with the format (String, String) to it
