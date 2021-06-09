@@ -15,11 +15,11 @@ use filetime::{FileTime, set_file_mtime};
 
 mod cli;
 
+//TODO: Add iqdb subcommand where local image specified gets posted to iqdb and a larger image is received.
 //TODO: To increase speed search for new links if an image has not been found or does not work. (Use objects which has a 'call next link' method)
 //TODO: Download file as tmp file that autodeletes until fully downloaded
 //TODO: Add progress bar, like when compiling with cargo
 //TODO: add renaming subcommand where folder name & name in threads.txt are updated
-//TODO: Add set title flag which, unlike '-d', only changed the title of "<thread_id> - <title>"
 static DEBUG: AtomicBool = AtomicBool::new(false);
 static PRINT_NUMBERED: AtomicBool = AtomicBool::new(true);
 
@@ -54,7 +54,7 @@ fn main() {
             // TODO: Implement update subcommand
             for thread in threads {
                 debug_output("update url", &thread.0);
-                chan(&thread.0, 
+                let res = chan(&thread.0, 
                     update_modify_date, 
                     // TODO: Save given dir to threads.txt
                     Some(&thread.1), 
@@ -66,6 +66,9 @@ fn main() {
                     args.is_present("print-existing-images")
                     
                 );
+                if res.is_none() {
+                    // threads.
+                }
             }
         },
         ("download", Some(args)) => {
@@ -78,7 +81,7 @@ fn main() {
                 args.is_present("iqdb"),
                 args.is_present("override"),
                 true
-            );
+            ).unwrap();
 
             if ! args.is_present("iqdb") {
                 // Add link to threads file for 'update' subcommand if not present
@@ -103,7 +106,7 @@ fn chan<S: AsRef<str>>(
         iqdb: bool,
         override_enabled: bool,
         print_existing_images: bool,
-) -> (String, String) {
+) -> Option<(String, String)> {
     let url: String = url.as_ref().to_string();
     let dir: String;
     let dir_path: PathBuf;
@@ -202,9 +205,8 @@ fn chan<S: AsRef<str>>(
         Err(r) => {
             if r.status() == 404 {
                 println!("Thread {} has been archived, removing from file", &url);
-                // TODO: chan returns results. Use enums for error type? like: RemoveThread to remove from list?
             }
-            Vec::new()
+            return None
         }
     };
 
@@ -247,7 +249,7 @@ fn chan<S: AsRef<str>>(
         
     }
 
-    return (url, dir);
+    return Some((url, dir));
 }
 
 fn debug_output(title: &str, message: &str) {
