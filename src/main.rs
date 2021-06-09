@@ -52,7 +52,7 @@ fn main() {
         // TODO: Only print new downloads to terminal
         ("update", Some(args)) => {
             // TODO: Implement update subcommand
-            for thread in threads {
+            threads.retain(|thread| {
                 debug_output("update url", &thread.0);
                 let res = chan(&thread.0, 
                     update_modify_date, 
@@ -66,10 +66,17 @@ fn main() {
                     args.is_present("print-existing-images")
                     
                 );
+                // Removes thread from file if chan returns None, which means that the thread has been archived.
+                // Keeps element if chan returns Some
                 if res.is_none() {
-                    // threads.
+                    false
                 }
-            }
+                else {
+                    true
+                }
+            });
+            debug_output("saving", "Updating threads.txt file");
+            vec_to_file(threads);
         },
         ("download", Some(args)) => {
             let url: String = args.value_of("url").expect("No url provided").to_string();
@@ -97,7 +104,7 @@ fn main() {
     }
 }
 
-// The procedure of grabbing information to downloading the images from the thread
+/// The procedure of grabbing information to downloading the images from the thread. Returns None if thread has been archived
 fn chan<S: AsRef<str>>(
         url: S, 
         update_modify_date: bool,
