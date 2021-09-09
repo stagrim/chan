@@ -15,9 +15,10 @@ use filetime::{FileTime, set_file_mtime};
 
 mod cli;
 
+// Mostly ideas for new features
+//TODO: Download file as tmp file that autodeletes until fully downloaded
 //TODO: Add iqdb subcommand where local image specified gets posted to iqdb and a larger image is received.
 //TODO: To increase speed search for new links if an image has not been found or does not work. (Use objects which has a 'call next link' method)
-//TODO: Download file as tmp file that autodeletes until fully downloaded
 //TODO: Add progress bar, like when compiling with cargo
 //TODO: add renaming subcommand where folder name & name in threads.txt are updated
 static DEBUG: AtomicBool = AtomicBool::new(false);
@@ -49,19 +50,15 @@ fn main() {
     };
 
     match matches.subcommand() {
-        // TODO: Only print new downloads to terminal
         ("update", Some(args)) => {
-            // TODO: Implement update subcommand
             threads.retain(|thread| {
                 debug_output("update url", &thread.0);
                 let res = chan(&thread.0, 
                     update_modify_date, 
-                    // TODO: Save given dir to threads.txt
                     Some(&thread.1), 
                     None,
                     // iqdb is not supported with update
                     false,
-                    // TODO: Make override a global option like update_modify_date
                     false,
                     args.is_present("print-existing-images")
                     
@@ -92,8 +89,8 @@ fn main() {
 
             if ! args.is_present("iqdb") {
                 // Add link to threads file for 'update' subcommand if not present
-                threads.dedup();
                 threads.push(thread.clone());
+                threads.dedup();
 
                 // Saves threads after chan() call to avoid non-working links
                 debug_output("saving", "Saving url to file");
@@ -200,7 +197,7 @@ fn chan<S: AsRef<str>>(
                     // Filter away all thumbnail images and only keep the hi-res ones
                     !n.contains("/thumb/"))
                     .map(|n| 
-                        if ! n.starts_with("https://") { 
+                        if ! n.starts_with("http") { 
                             n.replace("//", "https://") 
                         } 
                         else { 
@@ -327,7 +324,6 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             debug_output("img", &img.as_ref().clone());
 
             // Create link to iqdb image search for current image (used if no image is found)
-            // TODO: grab iqdb link directly from site?
             iqdb_link = format!("https://iqdb.org/?url={}", img.as_ref());
             debug_output("iqdb_link", &iqdb_link);
             
@@ -439,7 +435,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
         }
         
         // Iterate over found image urls until a with data is produced
-        // TODO: Download from chan.sankakucomplex.com
+        // BUG: Download from chan.sankakucomplex.com
         // TODO: Give error if no link works, check if break is called in for loop!
         for url in img_links.iter() {
             let extension = url.split(".").last().expect("No extension found");
@@ -475,7 +471,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
 fn file_to_vec() -> Result<Vec<(String, String)>, String> {
     let res: Vec<(String, String)>;
     let contents;
-    // TODO: Error handling when no file found
+    // BUG: Error handling when no file found
     contents = read_to_string("threads.txt").expect("threads.txt not found");
     res = contents
                 // Remove whitespace and special characters
@@ -514,10 +510,9 @@ fn get_response(url: &str) -> Response {
     resp
 }
 
-// TODO: Handle redirects in loop to get to pointed site. (for archived.moe which redirects to other sites)
+// BUG: Handle redirects in loop to get to pointed site. (for archived.moe which redirects to other sites)
 /// Returns HTML Document of given site
 fn get_html(url: &str) -> Result<Document, Response> {
-    // TODO: proper error in case of connection error
     let resp: Response = get_response(&url);
 
     if !resp.is_success() {
@@ -530,7 +525,6 @@ fn get_html(url: &str) -> Result<Document, Response> {
     return Ok(document);
 }
 
-// TODO: Return Result and better error handling for connection issues, https error codes etc.
 /// Returns Vector with all links found in anchor tags on given site
 fn get_links(url: &str) -> Result<Vec<String>, Response> {
     let mut res: Vec<String> = Vec::new();
@@ -548,7 +542,6 @@ fn get_links(url: &str) -> Result<Vec<String>, Response> {
 /// Returns a folder name with the "{thread-id} - {thread subject}" pattern
 fn get_name<S: AsRef<str>>(url: S, only_thread_number: bool) -> Result<String, Response> {
     debug_output("get_name url", url.as_ref());
-    //TODO: Add 404 management and remove link from threads.txt
     let doc = match get_html(&url.as_ref()) {
         Ok(d) => d,
         Err(r) => return Err(r)
@@ -556,7 +549,6 @@ fn get_name<S: AsRef<str>>(url: S, only_thread_number: bool) -> Result<String, R
         let thread_number: String = url.as_ref().split("/").filter(|&s| !s.is_empty()).collect::<Vec<_>>().last().unwrap().to_string();
         let mut subject_node = doc.find(Class("subject")).collect::<Vec<_>>();
 
-        // TODO: More elegant solution instead of if, if, if ...
         if subject_node.first().is_none() || subject_node.first().unwrap().text().is_empty() {
             subject_node = doc.find(Class("name")).collect::<Vec<_>>();
         }
@@ -581,6 +573,7 @@ fn get_name<S: AsRef<str>>(url: S, only_thread_number: bool) -> Result<String, R
         }
 }
 
+//BUG: When saving to file that has been updated those updates are lost. Read from file first and include the new records
 /// Removes existing file and writes links from Vec with the format (String, String) to it
 fn vec_to_file(vec: Vec<(String, String)>) {
     // std::fs::remove_file("threads.txt");
