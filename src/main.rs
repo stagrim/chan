@@ -471,8 +471,14 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
 fn file_to_vec() -> Result<Vec<(String, String)>, String> {
     let res: Vec<(String, String)>;
     let contents;
-    // BUG: Error handling when no file found
-    contents = read_to_string("threads.txt").expect("threads.txt not found");
+    contents = match read_to_string("threads.txt") {
+        Ok(contents) => contents,
+        Err(_) => {
+            println!("threads.txt does not exist, creating {}", Green.paint("Done"));
+            std::fs::write("threads.txt", "").expect("Could not create threads.txt file");
+            String::new()
+        }
+    };
     res = contents
                 // Remove whitespace and special characters
                 .split("\n").map(|s| s.trim().to_string()).filter(|s| ! s.is_empty())
