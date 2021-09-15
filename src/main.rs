@@ -6,17 +6,18 @@ extern crate filetime;
 
 use attohttpc::Response;
 use select::{document::Document, predicate::{Class, Name}};
+use tempfile::NamedTempFile;
 use core::time;
-use std::{io::Write, process, sync::atomic::{AtomicBool, Ordering}, thread, time::SystemTime};
+use std::{process, sync::atomic::{AtomicBool, Ordering}, thread, time::SystemTime};
+use std::io::{Read, Write, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
-use std::fs::{File, create_dir, read_dir, read_to_string};
+use std::fs::{File, create_dir, read_dir, read_to_string, copy};
 use ansi_term::Color::*;
 use filetime::{FileTime, set_file_mtime};
 
 mod cli;
 
 // Mostly ideas for new features
-//TODO: Download file as tmp file that autodeletes until fully downloaded
 //TODO: Add iqdb subcommand where local image specified gets posted to iqdb and a larger image is received.
 //TODO: To increase speed search for new links if an image has not been found or does not work. (Use objects which has a 'call next link' method)
 //TODO: Add progress bar, like when compiling with cargo
@@ -447,9 +448,17 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             let mut resp: Response = get_response(&url);
 
             debug_output("name", &file_path.as_os_str().to_str().unwrap());
+
+            let mut tmpfile_named: NamedTempFile = tempfile::NamedTempFile::new().unwrap();
+            // let mut tmpfile: File = tmpfile_named.reopen().unwrap();
+            let mut tmpfile: &File = tmpfile_named.as_file();
+            debug_output("tmp_file", &format!("{:?}", &tmpfile));
             
-            let mut file: File = File::create(&file_path.as_os_str()).expect("Could not create file");
-            std::io::copy(&mut resp, &mut file).expect("Could not download image to file");
+            // let mut file: File = File::create(&file_path.as_os_str()).expect("Could not create file");
+            // std::io::copy(&mut resp, &mut file).expect("Could not download image to file");
+            std::io::copy(&mut resp, &mut tmpfile).expect("Could not download image to file");
+            copy(tmpfile_named.path(), &file_path);
+            tmpfile_named.close().expect("Could not delete temporary file");
 
             let size = std::fs::metadata(&file_path).unwrap().len();
             // Stupid solution where image must be larger than 1 kB as not to download a 404 page or something as an image
