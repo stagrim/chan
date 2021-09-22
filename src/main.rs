@@ -18,6 +18,7 @@ use filetime::{FileTime, set_file_mtime};
 mod cli;
 
 // Mostly ideas for new features
+//TODO: Add flag to hide "could not get response" warning. Alternatively to show them in the first place
 //TODO: Add iqdb subcommand where local image specified gets posted to iqdb and a larger image is received.
 //TODO: To increase speed search for new links if an image has not been found or does not work. (Use objects which has a 'call next link' method)
 //TODO: Add progress bar, like when compiling with cargo
