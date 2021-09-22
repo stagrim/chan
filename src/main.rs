@@ -9,7 +9,7 @@ use select::{document::Document, predicate::{Class, Name}};
 use tempfile::NamedTempFile;
 use core::time;
 use std::{process, sync::atomic::{AtomicBool, Ordering}, thread, time::SystemTime};
-use std::io::{Read, Write, Seek, SeekFrom};
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::fs::{File, create_dir, read_dir, read_to_string, copy};
 use ansi_term::Color::*;
@@ -133,11 +133,14 @@ fn chan<S: AsRef<str>>(
         let thread_id = match get_name(&url, true) {
             Ok(t) => t,
             Err(r) => {
-                if r.status() == 404 {
+                if r.is_none() {
+                    println!("{} Could not get a response from {}", Red.paint("Error:"), &url);
+                }
+                else if r.as_ref().unwrap().status() == 404 {
                     println!("{} Thread {} could not be found, site returned 404 status error", Red.paint("Error:"), &url);
                 }
                 else {
-                    println!("{} Response error {} received from thread {}", Red.paint("Error:"), r.status(), &url)
+                    println!("{} Response error {} received from thread {}", Red.paint("Error:"), r.unwrap().status(), &url)
                 }
                 process::exit(1);
             }
@@ -147,12 +150,16 @@ fn chan<S: AsRef<str>>(
     else {
         dir = match get_name(&url, false) {
             Ok(t) => t,
+            //TODO: keep code DRY, this block is identical to the one above. Create function?
             Err(r) => {
-                if r.status() == 404 {
+                if r.is_none() {
+                    println!("{} Could not get a response from {}", Red.paint("Error:"), &url);
+                }
+                else if r.as_ref().unwrap().status() == 404 {
                     println!("{} Thread {} could not be found, site returned 404 status error", Red.paint("Error:"), &url);
                 }
                 else {
-                    println!("{} Response error {} received from thread {}", Red.paint("Error:"), r.status(), &url)
+                    println!("{} Response error {} received from thread {}", Red.paint("Error:"), r.unwrap().status(), &url)
                 }
                 process::exit(1);
             }
@@ -208,7 +215,7 @@ fn chan<S: AsRef<str>>(
             }
         },
         Err(r) => {
-            if r.status() == 404 {
+            if r.unwrap().status() == 404 {
                 println!("Thread {} has been archived, removing from file", &url);
             }
             return None
@@ -366,7 +373,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
                             .collect::<Vec<_>>()
                     },
                     Err(r) => {
-                        debug_output("Response error", format!("{} returned {}", url, r.status()).as_str());
+                        debug_output("Response error", format!("{} returned {:?}", url, r).as_str());
                         Vec::new()
                     }
                 };
@@ -445,11 +452,17 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
 
             debug_output("Trying", url.as_str());
 
-            let mut resp: Response = get_response(&url);
+            let mut resp: Response = match get_response(&url) {
+                Some(r) => r,
+                None => {
+                    println!("Could not get a response from {}, continuing", &url);
+                    continue
+                },
+            };
 
             debug_output("name", &file_path.as_os_str().to_str().unwrap());
 
-            let mut tmpfile_named: NamedTempFile = tempfile::NamedTempFile::new().unwrap();
+            let tmpfile_named: NamedTempFile = tempfile::NamedTempFile::new().unwrap();
             // let mut tmpfile: File = tmpfile_named.reopen().unwrap();
             let mut tmpfile: &File = tmpfile_named.as_file();
             debug_output("tmp_file", &format!("{:?}", &tmpfile));
@@ -457,7 +470,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             // let mut file: File = File::create(&file_path.as_os_str()).expect("Could not create file");
             // std::io::copy(&mut resp, &mut file).expect("Could not download image to file");
             std::io::copy(&mut resp, &mut tmpfile).expect("Could not download image to file");
-            copy(tmpfile_named.path(), &file_path);
+            copy(tmpfile_named.path(), &file_path).expect("Could not copy file, aborting");
             tmpfile_named.close().expect("Could not delete temporary file");
 
             let size = std::fs::metadata(&file_path).unwrap().len();
@@ -500,48 +513,61 @@ fn file_to_vec() -> Result<Vec<(String, String)>, String> {
     return Ok(res);
 }
 
-fn get_response(url: &str) -> Response {
+/// Creates `Response` object from given url. `None` if no response were given from site.
+fn get_response(url: &str) -> Option<Response> {
     let resp: Response;
     let mut i = 0;
 
     loop {
-        resp = match attohttpc::get(url).header(USER_AGENT, USER_AGENT_VALUE).send() {
+        resp = match attohttpc::get(url).header(USER_AGENT, USER_AGENT_VALUE).timeout(time::Duration::from_secs(5)).send() {
             Ok(r) => r,
             Err(_) => {
+                //TODO: is this block really necessary if a timeout is set?
                 i += 1;
-                if i == 10 {
-                    // TODO: Instead of crashing, move on to next image?
-                    println!("{} Could not get a response, aborting", Red.paint("Error:"));
-                    process::exit(1)
+                if i == 2 {
+                    println!("{} Could not get a response from {}, continuing", Yellow.paint("Warning:"), url);
+                    return None
                 }
                 println!("Could not get response, retrying...");
-                thread::sleep(time::Duration::from_secs(2));
+                thread::sleep(time::Duration::from_secs(1));
                 continue
             }
         };
         // If this is reached, then match returned Ok()
         break
     }
-    resp
+    Some(resp)
 }
 
 // BUG: Handle redirects in loop to get to pointed site. (for archived.moe which redirects to other sites)
-/// Returns HTML Document of given site
-fn get_html(url: &str) -> Result<Document, Response> {
-    let resp: Response = get_response(&url);
+/// Returns HTML Document of given site. 
+/// Error contains `Response` if it could be retrieved, otherwise `None`
+fn get_html(url: &str) -> Result<Document, Option<Response>> {
+    
+    let resp: Response = match get_response(&url) {
+        Some(r) => r,
+        None => return Err(None),
+    };
 
     if !resp.is_success() {
         debug_output("status error on", url);
-        return Err(resp)
+        return Err(Some(resp))
     }
 
-    let document = Document::from_read(resp).unwrap();
+    let document = match Document::from_read(resp) {
+        Ok(d) => d,
+        Err(e) => {
+            println!("{:#?}", e); 
+            return Err(None)
+        },
+    };
 
     return Ok(document);
 }
 
 /// Returns Vector with all links found in anchor tags on given site
-fn get_links(url: &str) -> Result<Vec<String>, Response> {
+/// Error contains `Response` if it could be retrieved, otherwise `None`
+fn get_links(url: &str) -> Result<Vec<String>, Option<Response>> {
     let mut res: Vec<String> = Vec::new();
 
     match get_html(url) {
@@ -555,7 +581,8 @@ fn get_links(url: &str) -> Result<Vec<String>, Response> {
 }
 
 /// Returns a folder name with the "{thread-id} - {thread subject}" pattern
-fn get_name<S: AsRef<str>>(url: S, only_thread_number: bool) -> Result<String, Response> {
+/// Error contains `Response` if it could be retrieved, otherwise `None`
+fn get_name<S: AsRef<str>>(url: S, only_thread_number: bool) -> Result<String, Option<Response>> {
     debug_output("get_name url", url.as_ref());
     let doc = match get_html(&url.as_ref()) {
         Ok(d) => d,
