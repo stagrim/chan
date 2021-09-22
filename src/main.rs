@@ -1,10 +1,10 @@
 extern crate clap;
-extern crate attohttpc;
+extern crate reqwest;
 extern crate select;
 extern crate ansi_term;
 extern crate filetime;
 
-use attohttpc::Response;
+use reqwest::blocking::{Response, Client};
 use select::{document::Document, predicate::{Class, Name}};
 use tempfile::NamedTempFile;
 use core::time;
@@ -335,6 +335,7 @@ fn download<P: AsRef<Path>, S: AsRef<str>>(
             iqdb_link = format!("https://iqdb.org/?url={}", img.as_ref());
             debug_output("iqdb_link", &iqdb_link);
             
+            //BUG: Must handle when get_links returns None
             // Lists all links on site and removes non useful links
             let mut iqdb_urls: Vec<String> = get_links( &iqdb_link).unwrap()
                             // Get all links before the '#' link (since all after are irrelevant)
@@ -515,11 +516,21 @@ fn file_to_vec() -> Result<Vec<(String, String)>, String> {
 
 /// Creates `Response` object from given url. `None` if no response were given from site.
 fn get_response(url: &str) -> Option<Response> {
+    let client: Client;
+
+    if url.contains("iqdb.org") {
+        // Ignore timeout for iqdb since it can take a while without being an error
+        client = Client::builder().build().unwrap();
+    }
+    else {
+        client = Client::builder().timeout(time::Duration::from_secs(5)).build().unwrap();
+    }
+
     let resp: Response;
     let mut i = 0;
 
     loop {
-        resp = match attohttpc::get(url).header(USER_AGENT, USER_AGENT_VALUE).timeout(time::Duration::from_secs(5)).send() {
+        resp = match client.get(url).header(USER_AGENT, USER_AGENT_VALUE).send() {
             Ok(r) => r,
             Err(_) => {
                 //TODO: is this block really necessary if a timeout is set?
@@ -544,19 +555,20 @@ fn get_response(url: &str) -> Option<Response> {
 /// Error contains `Response` if it could be retrieved, otherwise `None`
 fn get_html(url: &str) -> Result<Document, Option<Response>> {
     
-    let resp: Response = match get_response(&url) {
+    let mut resp: Response = match get_response(&url) {
         Some(r) => r,
         None => return Err(None),
     };
 
-    if !resp.is_success() {
+    if !resp.status().is_success() {
         debug_output("status error on", url);
         return Err(Some(resp))
     }
 
-    let document = match Document::from_read(resp) {
+    let document = match Document::from_read(&mut resp) {
         Ok(d) => d,
         Err(e) => {
+            println!("{:#?}", resp); 
             println!("{:#?}", e); 
             return Err(None)
         },
